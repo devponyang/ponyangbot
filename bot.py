@@ -1,0 +1,413 @@
+import asyncio
+import io
+import logging
+import os
+import re
+from datetime import datetime, timedelta
+from uuid import uuid4
+
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+from dotenv import load_dotenv
+
+from sheets import Sheets, sync_error_message
+from storage import KST, ROLE_LIMITS, Store
+from schedule import due_event_date, event_start, scheduled_capacity, cleanup_cutoff
+from identity import parse_display_name
+from welcome import WelcomeService
+
+log = logging.getLogger('ponyangbot')
+
+
+async def report_error(interaction, error):
+    if isinstance(error, ValueError):
+        message = str(error)
+    elif isinstance(error, app_commands.CheckFailure):
+        message = '서버 관리 권한이 필요합니다.'
+    else:
+        log.error('Interaction failed', exc_info=(type(error), error, error.__traceback__))
+        message = '처리 중 오류가 발생했습니다. 관리자에게 알려 주세요.'
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
+
+
+class EventView(discord.ui.View):
+    def __init__(self, bot, event_id):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.event_id = event_id
+        for child in self.children:
+            child.custom_id = f'node:{event_id}:{child.custom_id}'
+
+    def content(self, event):
+        return event_content(event)
+
+    async def on_error(self, interaction, error, item):
+        await report_error(interaction, error)
+
+    def require_current_event(self, guild_id):
+        latest = self.bot.store.latest_event(guild_id)
+        if latest is None or latest['id'] != self.event_id:
+            raise ValueError('이전 모집입니다. 가장 최근 모집 글에서 신청해 주세요.')
+
+    @discord.ui.button(label='참여', style=discord.ButtonStyle.success, custom_id='join')
+    async def join(self, interaction, button):
+        self.require_current_event(interaction.guild_id)
+        event = self.bot.store.event(self.event_id, interaction.guild_id)
+        if event['closed']:
+            raise ValueError('이미 마감된 모집입니다.')
+        guild_name, family = parse_display_name(interaction.user.display_name)
+        await interaction.response.defer(ephemeral=True)
+        self.bot.store.participate(self.event_id, interaction.guild_id,
+            interaction.user.id, str(interaction.user), family, guild_name=guild_name,
+            display_name=interaction.user.display_name)
+        position = next((i for i, member in enumerate(self.bot.store.members(self.event_id), 1)
+                        if member['user_id'] == str(interaction.user.id)), None)
+        if position is None:
+            position = next(i for i, p in enumerate(self.bot.store.members(self.event_id, waiting=True), 1)
+                            if p['user_id'] == str(interaction.user.id))
+            result = f'정원이 초과되어 예비 신청이 완료되었습니다.\n\n예비 {position}번째 순서'
+        else:
+            result = f'거점 신청이 완료되었습니다.\n\n{position}번째 순서'
+        await interaction.followup.send(
+            f'<@{interaction.user.id}>\n\n{result}',
+            ephemeral=True, allowed_mentions=discord.AllowedMentions(
+                everyone=False, roles=False, users=[discord.Object(id=interaction.user.id)], replied_user=False))
+
+    @discord.ui.button(label='부속 우선 참여', style=discord.ButtonStyle.primary, custom_id='priority')
+    async def priority(self, interaction, button):
+        self.require_current_event(interaction.guild_id)
+        if self.bot.store.event(self.event_id, interaction.guild_id)['closed']:
+            raise ValueError('이미 마감된 모집입니다.')
+        guild_name, family = parse_display_name(interaction.user.display_name)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            async with self.bot.role_lookup_lock:
+                role = await asyncio.to_thread(self.bot.sheets.lookup_role, guild_name, family)
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError('직업 시트를 조회하지 못했습니다. 잠시 후 다시 신청해 주세요.') from None
+        if role not in ROLE_LIMITS:
+            raise ValueError('부속 우선 참여는 화염탑·신기전·코끼리·불퇴·대포 역할만 가능합니다. 일반 참여 버튼을 이용해 주세요.')
+        # Another event or application may have been created during the network call.
+        self.require_current_event(interaction.guild_id)
+        changes = self.bot.store.participate(self.event_id, interaction.guild_id,
+            interaction.user.id, str(interaction.user), family, guild_name=guild_name,
+            display_name=interaction.user.display_name, priority_role=role)
+        position = next(i for i, p in enumerate(self.bot.store.members(self.event_id), 1)
+                        if p['user_id'] == str(interaction.user.id))
+        waiting = sum(state == '대기' for state in changes.values())
+        note = f'\n\n일반 참여자 {waiting}명이 예비로 전환되었습니다.' if waiting else ''
+        await interaction.followup.send(
+            f'<@{interaction.user.id}>\n\n{role} 부속 우선 참여 신청이 완료되었습니다.\n\n{position}번째 순서{note}',
+            ephemeral=True, allowed_mentions=discord.AllowedMentions(
+                everyone=False, roles=False, users=[discord.Object(id=interaction.user.id)], replied_user=False))
+
+    @discord.ui.button(label='참여 취소', style=discord.ButtonStyle.danger, custom_id='cancel')
+    async def cancel(self, interaction, button):
+        self.require_current_event(interaction.guild_id)
+        await interaction.response.defer(ephemeral=True)
+        self.bot.store.participate(self.event_id, interaction.guild_id,
+            interaction.user.id, str(interaction.user), '', join=False)
+        await interaction.followup.send(
+            '참여를 취소했습니다. 구글 시트에 자동 반영됩니다.', ephemeral=True)
+
+    @discord.ui.button(label='참여 인원 현황', style=discord.ButtonStyle.secondary, custom_id='list')
+    async def members(self, interaction, button):
+        event = self.bot.store.event(self.event_id, interaction.guild_id)
+        members = self.bot.store.members(self.event_id)
+        starts = datetime.strptime(event['starts'], '%Y-%m-%d %H:%M')
+        tier = re.search(r'(\d+)\s*단', event['name'])
+        tier_number = tier.group(1) if tier else '1'
+        heading = f'{starts.month}월{starts.day}일 {tier_number}단 거점 신청 현황'
+        names = [m['display_name'] or (f"[{m['guild_name']}] {m['nickname']}" if m['guild_name'] else m['nickname']) for m in members]
+        for i, member in enumerate(members):
+            if member.get('priority_role'):
+                names[i] += f" · {member['priority_role']} 우선"
+        body = '\n'.join(f'{i}. {discord.utils.escape_markdown(name)}' for i, name in enumerate(names, 1))
+        content = heading + '\n\n' + (body or '아직 참여자가 없습니다.')
+        waiting = self.bot.store.members(self.event_id, waiting=True)
+        if waiting:
+            waiting_names = [p['display_name'] or f"[{p['guild_name']}] {p['nickname']}" for p in waiting]
+            content += '\n\n예비 인원\n' + '\n'.join(
+                f'{i}. {discord.utils.escape_markdown(name)}' for i, name in enumerate(waiting_names, 1))
+        if len(content) > 1900:
+            await interaction.response.send_message(heading, ephemeral=True,
+                file=discord.File(io.BytesIO(content.encode('utf-8-sig')), filename='participants.txt'))
+        else:
+            await interaction.response.send_message(content, ephemeral=True,
+                                                    allowed_mentions=discord.AllowedMentions.none())
+
+    @discord.ui.button(label='모집 마감', style=discord.ButtonStyle.secondary, custom_id='close')
+    async def close_event(self, interaction, button):
+        if not interaction.permissions.manage_guild:
+            raise ValueError('모집 마감은 서버 관리 권한이 있는 관리자만 가능합니다.')
+        self.bot.store.close_event(self.event_id, interaction.guild_id)
+        await interaction.response.edit_message(content=self.content(
+            self.bot.store.event(self.event_id, interaction.guild_id)), embed=None, view=self,
+            allowed_mentions=discord.AllowedMentions.none())
+
+
+def event_content(event):
+    starts = datetime.strptime(event['starts'], '%Y-%m-%d %H:%M')
+    weekday = '월화수목금토일'[starts.weekday()]
+    capacity = f"총 {event['capacity']}인" if event['capacity'] else '제한 없음'
+    content = (
+        f"# **__{starts:%m월/%d일}__** {weekday}요일 거점전\n\n"
+        '```bash\n'
+        '"채널 : 발레노스, 세렌디아"\n'
+        '(1단 제한 거점입니다.)\n'
+        '```\n\n'
+        '참여 신청 : 선착순\n\n'
+        f'참여인원 : {capacity}\n\n'
+        '준비물 : 지뢰류, 비약, 다듬어진 석재, 부속건설도구, 화염탑용기름, 신기전화살\n\n'
+        '## :clipboard: **시트 안내사항**\n\n'
+        '시트지는 5분마다 업데이트 됩니다.\n\n'
+        '직업, 역할 등을 변경하고 싶으신 분은\n'
+        '시트 하단 `"각 길드별 직업시트"`에서 변경해주세요.\n\n'
+        '[거점 시트 바로가기](https://docs.google.com/spreadsheets/d/1RnhR-RdrDTnAjusPYVtloK5L-GFku9ZbKmsujTMWnMk/edit?gid=0#gid=0)\n\n'
+        '@everyone'
+    )
+    if event['closed']:
+        content += '\n\n**모집 마감**'
+    return content
+
+
+def recruitment_mentions():
+    return discord.AllowedMentions(everyone=True, users=False, roles=False, replied_user=False)
+
+
+class NodeBot(commands.Bot):
+    def __init__(self, store, sheets, guild_id, auto_channel_id=None, start_time='21:00'):
+        intents = discord.Intents.default()
+        intents.members = True
+        super().__init__(command_prefix=commands.when_mentioned, intents=intents,
+                         allowed_mentions=discord.AllowedMentions.none())
+        self.store = store
+        self.sheets = sheets
+        self.guild_id = guild_id
+        self.synced_version = -1
+        self.sync_error = False
+        self.sync_error_detail = ''
+        self.auto_channel_id = auto_channel_id
+        self.start_time = start_time
+        self.role_lookup_lock = asyncio.Lock()
+        self.sheet_sync_lock = asyncio.Lock()
+        self.legacy_tabs_archived = False
+        self.welcome_service = WelcomeService(self)
+
+    async def on_member_join(self, member):
+        await self.welcome_service.joined(member)
+
+    async def on_raw_reaction_add(self, payload):
+        await self.welcome_service.reacted(payload)
+
+    async def setup_hook(self):
+        for event in self.store.all_events():
+            self.add_view(EventView(self, event['id']))
+        guild = discord.Object(id=self.guild_id)
+        self.tree.copy_global_to(guild=guild)
+        await self.tree.sync(guild=guild)
+        self.sync_sheet.start()
+        self.auto_recruit.start()
+
+    async def cleanup_due_events(self, now):
+        changed = self.store.archive_due(self.guild_id, cleanup_cutoff(now))
+        # Synchronize immediately; the same lock protects the regular 5-minute job.
+        if changed:
+            await self.sync_sheet()
+        for post in self.store.cleanup_posts(self.guild_id):
+            channel_id = int(post['channel_id'])
+            try:
+                channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+                if getattr(getattr(channel, 'guild', None), 'id', None) != self.guild_id:
+                    raise ValueError('모집 메시지의 서버가 설정과 다릅니다.')
+                message = await channel.fetch_message(int(post['message_id']))
+                if message.author.id != self.user.id:
+                    raise ValueError('봇이 작성한 모집 메시지가 아닙니다.')
+                await message.delete()
+            except discord.NotFound:
+                pass  # Already deleted; completing cleanup is safe.
+            self.store.mark_deleted(post['event_id'])
+
+    async def post_due_event(self, now):
+        day = due_event_date(now)
+        if day is None:
+            return
+        starts = event_start(day, self.start_time)
+        if starts <= now:
+            return
+        event_id = f'auto-{self.guild_id}-{day.isoformat()}'
+        if self.store.posted(event_id):
+            return
+        channel = self.get_channel(self.auto_channel_id) or await self.fetch_channel(self.auto_channel_id)
+        if not isinstance(channel, discord.TextChannel) or channel.guild.id != self.guild_id:
+            raise ValueError('자동 게시 채널은 설정한 서버의 텍스트 채널이어야 합니다.')
+        marker = f'자동모집 ID: {event_id}'
+        # Recover a send that succeeded just before a crash or network timeout.
+        window = (starts - timedelta(days=1)).replace(hour=22, minute=0)
+        async for message in channel.history(limit=None, after=window):
+            matches = any(e.footer.text == marker for e in message.embeds) or any(
+                getattr(button, 'custom_id', None) == f'node:{event_id}:join'
+                for row in message.components for button in getattr(row, 'children', []))
+            if message.author.id == self.user.id and matches:
+                self.store.mark_posted(event_id, channel.id, message.id)
+                return
+        try:
+            event = self.store.event(event_id, self.guild_id)
+        except ValueError:
+            self.store.create(event_id, self.guild_id, '1단거점',
+                              starts.strftime('%Y-%m-%d %H:%M'), scheduled_capacity(starts))
+            event = self.store.event(event_id, self.guild_id)
+        if event['closed']:
+            return
+        message = await channel.send(content=event_content(event), view=EventView(self, event_id),
+                                     allowed_mentions=recruitment_mentions())
+        self.store.mark_posted(event_id, channel.id, message.id)
+
+    @tasks.loop(seconds=30)
+    async def auto_recruit(self):
+        now = datetime.now(KST)
+        try:
+            await self.cleanup_due_events(now)
+        except Exception as error:
+            log.warning('Recruitment cleanup failed (%s); retrying in 30 seconds', type(error).__name__)
+        try:
+            if self.auto_channel_id:
+                await self.post_due_event(now)
+        except Exception as error:
+            log.warning('Auto recruitment failed (%s); retrying in 30 seconds', type(error).__name__)
+
+    @auto_recruit.before_loop
+    async def before_auto_recruit(self):
+        await self.wait_until_ready()
+
+    @tasks.loop(minutes=5)
+    async def sync_sheet(self):
+        async with self.sheet_sync_lock:
+            await self.sync_sheet_once()
+
+    async def sync_sheet_once(self):
+        try:
+            if not self.legacy_tabs_archived:
+                if self.store.path is not None:
+                    await asyncio.to_thread(self.sheets.archive_legacy_tabs, self.store.path.parent / 'backups')
+                self.legacy_tabs_archived = True
+            version = self.store.revision
+            if version == self.synced_version:
+                return
+            roster = self.store.roster(self.guild_id)
+            event = self.store.latest_event(self.guild_id)
+            await asyncio.to_thread(self.sheets.sync, roster, event)
+            self.synced_version = version
+            self.sync_error = False
+            self.sync_error_detail = ''
+        except Exception as error:
+            self.sync_error = True
+            self.sync_error_detail = sync_error_message(error)
+            log.warning('Sheet sync failed: %s; retrying in 5 minutes', self.sync_error_detail)
+
+    async def close(self):
+        self.auto_recruit.cancel()
+        self.sync_sheet.cancel()
+        await super().close()
+
+
+def make_bot(store, sheets, guild_id, auto_channel_id=None, start_time='21:00'):
+    bot = NodeBot(store, sheets, guild_id, auto_channel_id, start_time)
+
+    @bot.tree.command(name='거점테스트', description='전체 멘션과 실제 시트 기록을 사용하는 모집을 즉시 게시합니다.')
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(정원='테스트 정원 (기본 25명)')
+    async def test_recruitment(interaction: discord.Interaction, 정원: app_commands.Range[int, 1, 30] = 25):
+        await interaction.response.defer(ephemeral=True)
+        event_id = 'test-' + uuid4().hex
+        starts = (datetime.now(KST) + timedelta(days=1)).strftime('%Y-%m-%d') + ' ' + bot.start_time
+        bot.store.create(event_id, interaction.guild_id, '1단거점', starts, 정원)
+        view = EventView(bot, event_id)
+        try:
+            message = await interaction.channel.send(
+                content=view.content(bot.store.event(event_id, interaction.guild_id)),
+                view=view, allowed_mentions=recruitment_mentions())
+            bot.store.mark_posted(event_id, interaction.channel.id, message.id)
+        except discord.HTTPException:
+            view.stop()
+            bot.store.close_event(event_id, interaction.guild_id)
+            raise ValueError('모집 글을 게시하지 못했습니다. 채널 전송 권한을 확인해 주세요.')
+        await interaction.followup.send(
+            '이 채널에 실제 모집을 게시했습니다. @everyone 호출 및 실제 시트 기록을 사용합니다.\n'
+            '다음 동기화 때(약 5분 이내) 거점시트 명단이 이 모집으로 교체됩니다.',
+            ephemeral=True)
+
+    @bot.tree.command(name='거점생성', description='참여 버튼이 있는 거점 모집을 생성합니다.')
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(거점명='거점 이름', 진행일시='한국시간: 2026-10-30 21:00', 정원='생략하면 요일별 25/30명, 최대 30명')
+    async def create(interaction: discord.Interaction, 거점명: app_commands.Range[str, 1, 80],
+                     진행일시: str, 정원: app_commands.Range[int, 1, 30] | None = None):
+        try:
+            starts = datetime.strptime(진행일시, '%Y-%m-%d %H:%M').replace(tzinfo=KST)
+        except ValueError:
+            raise ValueError('진행일시는 2026-10-30 21:00 형식으로 입력해 주세요.')
+        if starts <= datetime.now(KST):
+            raise ValueError('진행일시는 현재보다 이후여야 합니다.')
+        if 정원 is None:
+            정원 = scheduled_capacity(starts)
+            if 정원 is None:
+                raise ValueError('월요일과 토요일은 정기 거점 일정이 없습니다. 별도 모집은 정원을 지정해 주세요.')
+        await interaction.response.defer(ephemeral=True)
+        event_id = uuid4().hex
+        bot.store.create(event_id, interaction.guild_id, 거점명, starts.strftime('%Y-%m-%d %H:%M'), 정원)
+        view = EventView(bot, event_id)
+        try:
+            message = await interaction.channel.send(content=event_content(bot.store.event(event_id, interaction.guild_id)),
+                                           view=view, allowed_mentions=recruitment_mentions())
+            bot.store.mark_posted(event_id, interaction.channel.id, message.id)
+        except discord.HTTPException:
+            bot.store.close_event(event_id, interaction.guild_id)
+            raise ValueError('모집 메시지를 게시하지 못해 모집을 마감했습니다. 채널 전송·링크 첨부 권한을 확인해 주세요.')
+        await interaction.followup.send('모집을 생성했습니다.', ephemeral=True)
+
+    @bot.tree.command(name='시트상태', description='구글 스프레드시트 동기화 상태를 확인합니다.')
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def status(interaction: discord.Interaction):
+        version = bot.store.revision
+        state = ('연결 오류 — 자동 재시도 중' if bot.sync_error else
+                 '동기화 완료' if version == bot.synced_version else '동기화 대기 중')
+        if bot.sync_error_detail:
+            state += '\n' + bot.sync_error_detail
+        await interaction.response.send_message(state, ephemeral=True)
+
+    @bot.tree.error
+    async def command_error(interaction, error):
+        await report_error(interaction, getattr(error, 'original', error))
+
+    return bot
+
+
+def main():
+    load_dotenv()
+    logging.basicConfig(level=logging.INFO)
+    required = ['DISCORD_TOKEN', 'DISCORD_GUILD_ID', 'GOOGLE_SPREADSHEET_ID', 'GOOGLE_APPLICATION_CREDENTIALS']
+    missing = [key for key in required if not os.getenv(key)]
+    if missing:
+        raise SystemExit('.env에 다음 값을 입력하세요: ' + ', '.join(missing))
+    bot = make_bot(Store(os.getenv('DATABASE_PATH', 'data/bot.json')),
+        Sheets(os.environ['GOOGLE_SPREADSHEET_ID'], os.environ['GOOGLE_APPLICATION_CREDENTIALS']),
+        int(os.environ['DISCORD_GUILD_ID']),
+        int(os.environ['AUTO_RECRUIT_CHANNEL_ID']) if os.getenv('AUTO_RECRUIT_CHANNEL_ID') else None,
+        os.getenv('EVENT_START_TIME', '21:00'))
+    bot.run(os.environ['DISCORD_TOKEN'])
+
+
+if __name__ == '__main__':
+    main()
