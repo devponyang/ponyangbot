@@ -8,14 +8,14 @@ from storage import KST
 class ScheduleTests(unittest.TestCase):
     def test_posting_window_and_saturday_skip(self):
         for stamp, expected in [
-            ('2026-10-25T22:00:00', None),
+            ('2026-10-25T21:30:00', None),
             ('2026-10-26T09:00:00', None),
-            ('2026-10-26T21:59:00', None),
-            ('2026-10-26T22:00:00', '2026-10-27'),
+            ('2026-10-26T21:29:59', None),
+            ('2026-10-26T21:30:00', '2026-10-27'),
             ('2026-10-27T00:01:00', '2026-10-27'),
-            ('2026-10-30T22:00:00', None),
-            ('2026-10-31T21:59:00', None),
-            ('2026-10-31T22:00:00', '2026-11-01'),
+            ('2026-10-30T21:30:00', None),
+            ('2026-10-31T21:29:59', None),
+            ('2026-10-31T21:30:00', '2026-11-01'),
         ]:
             with self.subTest(stamp=stamp):
                 day = due_event_date(datetime.fromisoformat(stamp).replace(tzinfo=KST))

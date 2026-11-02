@@ -15,9 +15,9 @@ def scheduled_capacity(starts):
 
 
 def due_event_date(now):
-    """Latest 22:00 posting window; recover missed posts until that event day ends."""
+    """Latest 21:30 posting window; recover missed posts until that event day ends."""
     local = now.astimezone(KST)
-    day = local.date() + timedelta(days=1) if local.hour >= 22 else local.date()
+    day = local.date() + timedelta(days=1) if local.time() >= time(21, 30) else local.date()
     return day if day.weekday() in WEEKDAY_CAPACITY else None
 
 
@@ -27,5 +27,5 @@ def event_start(day, clock):
 
 def cleanup_cutoff(now):
     local = now.astimezone(KST)
-    cutoff = local.replace(hour=21, minute=30, second=0, microsecond=0)
+    cutoff = local.replace(hour=21, minute=10, second=0, microsecond=0)
     return cutoff if local >= cutoff else cutoff - timedelta(days=1)

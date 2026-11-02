@@ -9,7 +9,7 @@ from sheets import Sheets
 
 
 class CleanupTests(unittest.IsolatedAsyncioTestCase):
-    async def test_cleanup_at_2130_and_future_event_preserved(self):
+    async def test_cleanup_at_2110_and_future_event_preserved(self):
         store = Store(':memory:')
         sheets = Mock()
         bot = make_bot(store, sheets, 123)
@@ -23,16 +23,16 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         message.delete = AsyncMock()
         channel.fetch_message = AsyncMock(return_value=message)
         bot.get_channel = Mock(return_value=channel)
-        await bot.cleanup_due_events(datetime(2026, 10, 30, 21, 29, tzinfo=KST))
+        await bot.cleanup_due_events(datetime(2026, 10, 30, 21, 9, 59, tzinfo=KST))
         channel.fetch_message.assert_not_called()
         sheets.sync.assert_not_called()
-        await bot.cleanup_due_events(datetime(2026, 10, 30, 21, 30, tzinfo=KST))
+        await bot.cleanup_due_events(datetime(2026, 10, 30, 21, 10, tzinfo=KST))
         message.delete.assert_awaited_once()
         self.assertTrue(store.event('today', 123)['closed'])
         self.assertEqual(store.roster(123), [['', ''] for _ in range(100)])
         self.assertEqual(len(store.members('today')), 1)  # Archive retains history.
         self.assertTrue(sheets.sync.call_args.args[1]['archived'])
-        await bot.cleanup_due_events(datetime(2026, 10, 30, 21, 31, tzinfo=KST))
+        await bot.cleanup_due_events(datetime(2026, 10, 30, 21, 11, tzinfo=KST))
         message.delete.assert_awaited_once()
         store.create('future', 123, '1단거점', '2026-11-01 21:00', 30)
         store.mark_posted('future', 456, 790)
@@ -61,6 +61,6 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r['range'] for r in data], ["'거점시트'!K16:L115", "'거점시트'!F2"])
         self.assertEqual(data[1]['values'], [['']])
 
-    async def test_cutoff_recovers_previous_day_before_2130(self):
+    async def test_cutoff_recovers_previous_day_before_2110(self):
         self.assertEqual(cleanup_cutoff(datetime(2026, 10, 31, 9, tzinfo=KST)),
-                         datetime(2026, 10, 30, 21, 30, tzinfo=KST))
+                         datetime(2026, 10, 30, 21, 10, tzinfo=KST))

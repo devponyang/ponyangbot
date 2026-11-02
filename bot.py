@@ -249,7 +249,7 @@ class NodeBot(commands.Bot):
             raise ValueError('자동 게시 채널은 설정한 서버의 텍스트 채널이어야 합니다.')
         marker = f'자동모집 ID: {event_id}'
         # Recover a send that succeeded just before a crash or network timeout.
-        window = (starts - timedelta(days=1)).replace(hour=22, minute=0)
+        window = (starts - timedelta(days=1)).replace(hour=21, minute=30)
         async for message in channel.history(limit=None, after=window):
             matches = any(e.footer.text == marker for e in message.embeds) or any(
                 getattr(button, 'custom_id', None) == f'node:{event_id}:join'

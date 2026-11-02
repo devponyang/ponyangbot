@@ -45,6 +45,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         sent = []
 
         async def history(**kwargs):
+            self.assertEqual(kwargs["after"], datetime(2026, 10, 26, 21, 30, tzinfo=KST))
             for message in sent:
                 yield message
 
@@ -57,7 +58,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         channel.history = history
         channel.send = AsyncMock(side_effect=send)
         self.bot.get_channel = Mock(return_value=channel)
-        now = datetime(2026, 10, 26, 22, tzinfo=KST)
+        now = datetime(2026, 10, 26, 21, 30, tzinfo=KST)
         await self.bot.post_due_event(now)
         await self.bot.post_due_event(now)
         self.assertEqual(channel.send.call_count, 1)
@@ -76,7 +77,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_post_for_saturday_or_started_event(self):
         self.bot.get_channel = Mock()
         await self.bot.post_due_event(datetime(2026, 10, 30, 22, tzinfo=KST))
-        await self.bot.post_due_event(datetime(2026, 10, 26, 21, 30, tzinfo=KST))
+        await self.bot.post_due_event(datetime(2026, 10, 27, 21, 29, tzinfo=KST))
         self.bot.get_channel.assert_not_called()
 
     async def test_join_uses_server_nickname_without_modal(self):
