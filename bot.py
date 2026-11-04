@@ -13,9 +13,10 @@ from dotenv import load_dotenv
 
 from sheets import Sheets, sync_error_message
 from storage import KST, ROLE_LIMITS, Store
-from schedule import due_event_date, event_start, scheduled_capacity, cleanup_cutoff
+from schedule import due_event_date, event_start, scheduled_capacity, cleanup_cutoff, mode_name, SIEGE_NAMES, require_priority_open
 from identity import parse_display_name
 from welcome import WelcomeService
+from admin_panel import SchedulePanel
 
 log = logging.getLogger('ponyangbot')
 
@@ -32,6 +33,38 @@ async def report_error(interaction, error):
         await interaction.followup.send(message, ephemeral=True)
     else:
         await interaction.response.send_message(message, ephemeral=True)
+
+
+class MercenaryModal(discord.ui.Modal, title='용병 추가'):
+    family = discord.ui.TextInput(label='게임 가문명', placeholder='추가할 용병의 가문명', max_length=50)
+
+    def __init__(self, view):
+        super().__init__()
+        self.event_view = view
+
+    async def on_submit(self, interaction):
+        if not interaction.permissions.manage_guild:
+            raise ValueError('용병 추가는 서버 관리 권한이 있는 관리자만 가능합니다.')
+        view = self.event_view
+        view.require_current_event(interaction.guild_id)
+        family = self.family.value.strip()
+        user_id = 'merc-' + uuid4().hex
+        view.bot.store.participate(view.event_id, interaction.guild_id, user_id, '', family,
+                                   guild_name='용병', display_name=f'[용병] {family}')
+        members = view.bot.store.members(view.event_id)
+        position = next((i for i, p in enumerate(members, 1) if p['user_id'] == user_id), None)
+        if position is None:
+            waiting = view.bot.store.members(view.event_id, waiting=True)
+            position = next(i for i, p in enumerate(waiting, 1) if p['user_id'] == user_id)
+            status = f'예비 {position}번째'
+        else:
+            status = f'{position}번째 순서'
+        await interaction.response.send_message(
+            f'[용병] {family} 추가 완료 · {status}\n시트에는 약 5분 이내에 반영됩니다.',
+            ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    async def on_error(self, interaction, error):
+        await report_error(interaction, error)
 
 
 class EventView(discord.ui.View):
@@ -82,6 +115,7 @@ class EventView(discord.ui.View):
         self.require_current_event(interaction.guild_id)
         if self.bot.store.event(self.event_id, interaction.guild_id)['closed']:
             raise ValueError('이미 마감된 모집입니다.')
+        require_priority_open(self.bot.store.event(self.event_id, interaction.guild_id))
         guild_name, family = parse_display_name(interaction.user.display_name)
         await interaction.response.defer(ephemeral=True)
         try:
@@ -95,6 +129,7 @@ class EventView(discord.ui.View):
             raise ValueError('부속 우선 참여는 화염탑·신기전·코끼리·불퇴·대포 역할만 가능합니다. 일반 참여 버튼을 이용해 주세요.')
         # Another event or application may have been created during the network call.
         self.require_current_event(interaction.guild_id)
+        require_priority_open(self.bot.store.event(self.event_id, interaction.guild_id))
         changes = self.bot.store.participate(self.event_id, interaction.guild_id,
             interaction.user.id, str(interaction.user), family, guild_name=guild_name,
             display_name=interaction.user.display_name, priority_role=role)
@@ -123,7 +158,8 @@ class EventView(discord.ui.View):
         starts = datetime.strptime(event['starts'], '%Y-%m-%d %H:%M')
         tier = re.search(r'(\d+)\s*단', event['name'])
         tier_number = tier.group(1) if tier else '1'
-        heading = f'{starts.month}월{starts.day}일 {tier_number}단 거점 신청 현황'
+        kind = '공성전' if '공성전' in event['name'] else f'{tier_number}단 거점'
+        heading = f'{starts.month}월{starts.day}일 {kind} 신청 현황'
         names = [m['display_name'] or (f"[{m['guild_name']}] {m['nickname']}" if m['guild_name'] else m['nickname']) for m in members]
         for i, member in enumerate(members):
             if member.get('priority_role'):
@@ -142,29 +178,44 @@ class EventView(discord.ui.View):
             await interaction.response.send_message(content, ephemeral=True,
                                                     allowed_mentions=discord.AllowedMentions.none())
 
-    @discord.ui.button(label='모집 마감', style=discord.ButtonStyle.secondary, custom_id='close')
-    async def close_event(self, interaction, button):
+    # Retain the former button ID so old messages cannot accidentally close a recruitment.
+    @discord.ui.button(label='용병 추가', style=discord.ButtonStyle.secondary, custom_id='close')
+    async def add_mercenary(self, interaction, button):
         if not interaction.permissions.manage_guild:
-            raise ValueError('모집 마감은 서버 관리 권한이 있는 관리자만 가능합니다.')
-        self.bot.store.close_event(self.event_id, interaction.guild_id)
-        await interaction.response.edit_message(content=self.content(
-            self.bot.store.event(self.event_id, interaction.guild_id)), embed=None, view=self,
-            allowed_mentions=discord.AllowedMentions.none())
+            raise ValueError('용병 추가는 서버 관리 권한이 있는 관리자만 가능합니다.')
+        self.require_current_event(interaction.guild_id)
+        if self.bot.store.event(self.event_id, interaction.guild_id)['closed']:
+            raise ValueError('이미 마감된 모집입니다.')
+        await interaction.response.send_modal(MercenaryModal(self))
 
 
 def event_content(event):
     starts = datetime.strptime(event['starts'], '%Y-%m-%d %H:%M')
     weekday = '월화수목금토일'[starts.weekday()]
+    tier_match = re.search(r"([12])\s*단", event["name"])
+    tier = int(tier_match.group(1)) if tier_match else 1
+    channels = "칼페온, 올루키타" if tier == 2 else "발레노스, 세렌디아"
     capacity = f"총 {event['capacity']}인" if event['capacity'] else '제한 없음'
+    siege = '공성전' in event['name']
+    battle = '공성전' if siege else '거점전'
+    restriction = f'{tier}단 제한 거점입니다.'
+    if siege:
+        location = next((name for name in SIEGE_NAMES.values() if name in event['name']), event['name'])
+        channels = location.removeprefix('무제한 ').removeprefix('제한 ')
+        restriction = f'{location} 공성전입니다.'
+    supplies = ('녹아내린 구리조각 100개 + 철 주괴 100개,지뢰류, 비약, 석재, 부속건설도구, '
+                '(강화)화염탑용기름, (대)신기전화살, 정제수' if siege or tier == 2 else
+                '지뢰류, 비약, 다듬어진 석재, 부속건설도구, 화염탑용기름, 신기전화살')
     content = (
-        f"# **__{starts:%m월/%d일}__** {weekday}요일 거점전\n\n"
+        f"# **__{starts:%m월/%d일}__** {weekday}요일 {battle}\n\n"
         '```bash\n'
-        '"채널 : 발레노스, 세렌디아"\n'
-        '(1단 제한 거점입니다.)\n'
+        f'"채널 : {channels}"\n'
+        f'({restriction})\n'
         '```\n\n'
         '참여 신청 : 선착순\n\n'
+        f'시작 시각 : {starts:%H:%M}\n\n'
         f'참여인원 : {capacity}\n\n'
-        '준비물 : 지뢰류, 비약, 다듬어진 석재, 부속건설도구, 화염탑용기름, 신기전화살\n\n'
+        f'준비물 : {supplies}\n\n'
         '## :clipboard: **시트 안내사항**\n\n'
         '시트지는 5분마다 업데이트 됩니다.\n\n'
         '직업, 역할 등을 변경하고 싶으신 분은\n'
@@ -172,6 +223,9 @@ def event_content(event):
         '[거점 시트 바로가기](https://docs.google.com/spreadsheets/d/1RnhR-RdrDTnAjusPYVtloK5L-GFku9ZbKmsujTMWnMk/edit?gid=0#gid=0)\n\n'
         '@everyone'
     )
+    if not siege:
+        cutoff = starts - timedelta(hours=1)
+        content += f'\n\n※ 부속 우선 참여는 시작 1시간 전({cutoff:%H:%M})부터 불가능합니다. 이후에는 일반 참여 버튼을 이용해 주세요.'
     if event['closed']:
         content += '\n\n**모집 마감**'
     return content
@@ -199,6 +253,28 @@ class NodeBot(commands.Bot):
         self.sheet_sync_lock = asyncio.Lock()
         self.legacy_tabs_archived = False
         self.welcome_service = WelcomeService(self)
+        self.posts_refreshed = False
+
+    async def on_ready(self):
+        if self.posts_refreshed:
+            return
+        self.posts_refreshed = True
+        for event in self.store.all_events():
+            if event['guild_id'] != str(self.guild_id) or event.get('archived'):
+                continue
+            post = self.store.data['auto_posts'].get(event['id'])
+            if not post or post.get('deleted'):
+                continue
+            try:
+                channel = self.get_channel(int(post['channel_id'])) or await self.fetch_channel(int(post['channel_id']))
+                if channel.guild.id != self.guild_id:
+                    continue
+                message = await channel.fetch_message(int(post['message_id']))
+                if message.author.id == self.user.id:
+                    await message.edit(content=event_content(event), view=EventView(self, event['id']),
+                                       allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException as error:
+                log.warning('Recruitment refresh failed (%s)', type(error).__name__)
 
     async def on_member_join(self, member):
         await self.welcome_service.joined(member)
@@ -235,10 +311,11 @@ class NodeBot(commands.Bot):
             self.store.mark_deleted(post['event_id'])
 
     async def post_due_event(self, now):
-        day = due_event_date(now)
+        tiers = self.store.weekly_tiers(self.guild_id)
+        day = due_event_date(now, tiers)
         if day is None:
             return
-        starts = event_start(day, self.start_time)
+        starts = event_start(day, self.start_time, tiers[day.weekday()])
         if starts <= now:
             return
         event_id = f'auto-{self.guild_id}-{day.isoformat()}'
@@ -260,8 +337,8 @@ class NodeBot(commands.Bot):
         try:
             event = self.store.event(event_id, self.guild_id)
         except ValueError:
-            self.store.create(event_id, self.guild_id, '1단거점',
-                              starts.strftime('%Y-%m-%d %H:%M'), scheduled_capacity(starts))
+            self.store.create(event_id, self.guild_id, mode_name(tiers[day.weekday()]),
+                              starts.strftime('%Y-%m-%d %H:%M'), scheduled_capacity(starts, tiers))
             event = self.store.event(event_id, self.guild_id)
         if event['closed']:
             return
@@ -320,12 +397,20 @@ class NodeBot(commands.Bot):
 def make_bot(store, sheets, guild_id, auto_channel_id=None, start_time='21:00'):
     bot = NodeBot(store, sheets, guild_id, auto_channel_id, start_time)
 
+    @bot.tree.command(name='관리자패널', description='요일별 거점 단계와 정기 모집 설정을 변경합니다.')
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def admin_panel(interaction: discord.Interaction):
+        view = SchedulePanel(bot.store, interaction.guild_id, interaction.user.id, bot.start_time)
+        await interaction.response.send_message(view.content(), view=view, ephemeral=True)
+
     @bot.tree.command(name='거점테스트', description='전체 멘션과 실제 시트 기록을 사용하는 모집을 즉시 게시합니다.')
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(정원='테스트 정원 (기본 25명)')
-    async def test_recruitment(interaction: discord.Interaction, 정원: app_commands.Range[int, 1, 30] = 25):
+    async def test_recruitment(interaction: discord.Interaction, 정원: app_commands.Range[int, 1, 100] = 25):
         await interaction.response.defer(ephemeral=True)
         event_id = 'test-' + uuid4().hex
         starts = (datetime.now(KST) + timedelta(days=1)).strftime('%Y-%m-%d') + ' ' + bot.start_time
@@ -349,9 +434,9 @@ def make_bot(store, sheets, guild_id, auto_channel_id=None, start_time='21:00'):
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.describe(거점명='거점 이름', 진행일시='한국시간: 2026-10-30 21:00', 정원='생략하면 요일별 25/30명, 최대 30명')
+    @app_commands.describe(거점명='거점 이름', 진행일시='한국시간: 2026-10-30 21:00', 정원='생략하면 관리자 패널의 요일 설정, 최대 100명')
     async def create(interaction: discord.Interaction, 거점명: app_commands.Range[str, 1, 80],
-                     진행일시: str, 정원: app_commands.Range[int, 1, 30] | None = None):
+                     진행일시: str, 정원: app_commands.Range[int, 1, 100] | None = None):
         try:
             starts = datetime.strptime(진행일시, '%Y-%m-%d %H:%M').replace(tzinfo=KST)
         except ValueError:
@@ -359,9 +444,9 @@ def make_bot(store, sheets, guild_id, auto_channel_id=None, start_time='21:00'):
         if starts <= datetime.now(KST):
             raise ValueError('진행일시는 현재보다 이후여야 합니다.')
         if 정원 is None:
-            정원 = scheduled_capacity(starts)
+            정원 = scheduled_capacity(starts, bot.store.weekly_tiers(interaction.guild_id))
             if 정원 is None:
-                raise ValueError('월요일과 토요일은 정기 거점 일정이 없습니다. 별도 모집은 정원을 지정해 주세요.')
+                raise ValueError('해당 요일은 정기 거점 일정이 없습니다. 별도 모집은 정원을 지정해 주세요.')
         await interaction.response.defer(ephemeral=True)
         event_id = uuid4().hex
         bot.store.create(event_id, interaction.guild_id, 거점명, starts.strftime('%Y-%m-%d %H:%M'), 정원)

@@ -29,9 +29,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         await view.cancel.callback(interaction)
         self.assertEqual(view.bot.store.members(view.event_id), [])
         interaction.permissions.manage_guild = True
-        interaction.response.edit_message = AsyncMock()
-        await view.close_event.callback(interaction)
-        self.assertIn('모집 마감', interaction.response.edit_message.call_args.kwargs['content'])
+        self.store.close_event(view.event_id, 123)
         with self.assertRaises(ValueError):
             await view.join.callback(interaction)
         view.stop()
@@ -145,16 +143,18 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(command.default_permissions.manage_guild)
             self.assertTrue(command.checks)
 
-    async def test_close_keeps_template_without_repeating_ping(self):
-        self.store.create('event', '123', '1단거점', '2026-10-28 21:00', 25)
+    async def test_mercenary_button_replaces_close(self):
+        self.store.create('event', 123, '1단거점', '2030-01-01 21:00', 25)
         interaction = Mock(guild_id=123)
         interaction.permissions.manage_guild = True
-        interaction.response.edit_message = AsyncMock()
+        interaction.response.send_modal = AsyncMock()
         view = EventView(self.bot, 'event')
-        await view.close_event.callback(interaction)
-        edited = interaction.response.edit_message.call_args.kwargs
-        self.assertIn('# **__10월/28일__** 수요일 거점전', edited['content'])
-        self.assertIn('참여인원 : 총 25인', edited['content'])
-        self.assertIn('**모집 마감**', edited['content'])
-        self.assertFalse(edited['allowed_mentions'].everyone)
-        self.assertIsNone(edited['embed'])
+        await view.add_mercenary.callback(interaction)
+        interaction.response.send_modal.assert_awaited_once()
+        self.assertNotIn('모집 마감', [item.label for item in view.children])
+        self.assertIn('용병 추가', [item.label for item in view.children])
+        self.assertFalse(self.store.event('event', 123)['closed'])
+        interaction.permissions.manage_guild = False
+        with self.assertRaises(ValueError):
+            await view.add_mercenary.callback(interaction)
+        view.stop()

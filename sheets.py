@@ -126,6 +126,7 @@ class Sheets:
             if not event.get('archived'):
                 starts = datetime.strptime(event['starts'], '%Y-%m-%d %H:%M')
                 weekday = '월화수목금토일'[starts.weekday()]
-                title = f"{starts:%Y-%m-%d} {weekday}요일 {event['capacity']}인 거점전 참여명단"
+                battle = "공성전" if "공성전" in event.get("name", "") else "거점전"
+                title = f"{starts:%Y-%m-%d} {weekday}요일 {event['capacity']}인 {battle} 참여명단"
             data.append({'range': "'거점시트'!F2", 'values': [[title]]})
         self.request('POST', '/values:batchUpdate', json={'valueInputOption': 'RAW', 'data': data})

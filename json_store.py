@@ -75,6 +75,18 @@ class Store:
     def revision(self):
         return self.data['revision']
 
+    def weekly_tiers(self, guild_id):
+        return list(self.data.get('weekly_tiers', {}).get(str(guild_id), [0, 1, 1, 1, 1, 0, 1]))
+
+    def set_weekly_tier(self, guild_id, weekday, tier):
+        if weekday not in range(7) or tier not in ((0, 3, 4, 5) if weekday == 5 else (0, 1, 2)):
+            raise ValueError('토요일은 미진행 또는 공성전, 다른 요일은 미진행·1단·2단만 가능합니다.')
+        data = copy.deepcopy(self.data)
+        tiers = self.weekly_tiers(guild_id)
+        tiers[weekday] = tier
+        data.setdefault('weekly_tiers', {})[str(guild_id)] = tiers
+        self._commit(data)
+
     def all_events(self):
         return copy.deepcopy(self.data['events'])
 
