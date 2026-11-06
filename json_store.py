@@ -116,7 +116,7 @@ class Store:
         return copy.deepcopy(self._rank([p for p in self.data['participants'] if p['event_id'] == event_id and p['status'] == status]))
 
     def participate(self, event_id, guild_id, user_id, username, nickname, join=True,
-                    guild_name='', display_name='', priority_role=None):
+                    guild_name='', display_name='', priority_role=None, actor_id=None):
         event = self.event(event_id, guild_id)
         if event['closed']:
             raise ValueError('이미 마감된 모집입니다.')
@@ -124,6 +124,7 @@ class Store:
         rows = [p for p in data['participants'] if p['event_id'] == event_id]
         active = [p for p in rows if p['status'] != '취소']
         own = next((p for p in rows if p['user_id'] == str(user_id)), None)
+        before = copy.deepcopy(own)
         enrolled = own is not None and own['status'] != '취소'
         previous = {p['user_id']: p['status'] for p in active}
         if not join:
@@ -161,8 +162,45 @@ class Store:
         ranked = self._rank([p for p in data['participants'] if p['event_id'] == event_id and p['status'] != '취소'])
         for i, p in enumerate(ranked):
             p['status'] = '참여' if not event['capacity'] or i < event['capacity'] else '대기'
+        if 'participation_history' not in data:
+            data['participation_history'] = self._legacy_history()
+        action = ('신청 취소' if not join else
+                  '용병 추가' if str(user_id).startswith('merc-') and not enrolled else
+                  '재신청' if before and not enrolled else
+                  '신청 변경/재확인' if enrolled else '참여 신청')
+        def record(person, action, actor):
+            return dict(event_id=event_id, guild_id=str(guild_id), user_id=person['user_id'],
+                        display_name=person.get('display_name', ''), nickname=person['nickname'],
+                        guild_name=person.get('guild_name', ''), action=action,
+                        status=person['status'], priority_role=person.get('priority_role', ''),
+                        at=own['updated'], actor_id=str(actor))
+        data['participation_history'].append(record(own, action, actor_id or user_id))
+        for person in ranked:
+            if person['user_id'] != str(user_id) and previous.get(person['user_id']) != person['status']:
+                data['participation_history'].append(record(person, '자동 순번 변경', actor_id or user_id))
         self._commit(data)
         return {p['user_id']: p['status'] for p in ranked if previous.get(p['user_id']) != p['status']}
+
+    def _legacy_history(self):
+        guilds = {e['id']: e['guild_id'] for e in self.data['events']}
+        return [dict(event_id=p['event_id'], guild_id=guilds[p['event_id']], user_id=p['user_id'],
+                     display_name=p.get('display_name', ''), nickname=p['nickname'],
+                     guild_name=p.get('guild_name', ''), action='기존 마지막 변경 (전체 이력 없음)',
+                     status=p['status'], priority_role=p.get('priority_role', ''),
+                     at=p['updated'], actor_id='미상')
+                for p in self.data['participants'] if p.get('updated') and p['event_id'] in guilds]
+
+    def participation_history(self, guild_id, day=None, user_id=None, family=None):
+        events = {e['id']: e for e in self.data['events'] if e['guild_id'] == str(guild_id)
+                  and (day is None or e['starts'][:10] == day)}
+        history = self.data.get('participation_history')
+        if history is None:
+            history = self._legacy_history()
+        return [dict(copy.deepcopy(row), event_name=events[row['event_id']]['name'],
+                     starts=events[row['event_id']]['starts'])
+                for row in history if row['event_id'] in events
+                and (user_id is None or row['user_id'] == str(user_id))
+                and (family is None or row['nickname'] == family.strip())]
 
     def close_event(self, event_id, guild_id):
         self.event(event_id, guild_id)

@@ -50,7 +50,7 @@ class MercenaryModal(discord.ui.Modal, title='용병 추가'):
         family = self.family.value.strip()
         user_id = 'merc-' + uuid4().hex
         view.bot.store.participate(view.event_id, interaction.guild_id, user_id, '', family,
-                                   guild_name='용병', display_name=f'[용병] {family}')
+                                   guild_name='용병', display_name=f'[용병] {family}', actor_id=interaction.user.id)
         members = view.bot.store.members(view.event_id)
         position = next((i for i, p in enumerate(members, 1) if p['user_id'] == user_id), None)
         if position is None:
@@ -459,6 +459,46 @@ def make_bot(store, sheets, guild_id, auto_channel_id=None, start_time='21:00'):
             bot.store.close_event(event_id, interaction.guild_id)
             raise ValueError('모집 메시지를 게시하지 못해 모집을 마감했습니다. 채널 전송·링크 첨부 권한을 확인해 주세요.')
         await interaction.followup.send('모집을 생성했습니다.', ephemeral=True)
+
+    @bot.tree.command(name='참여기록', description='거점·공성의 신청 및 취소 이력을 조회합니다.')
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(날짜='거점 진행일 YYYY-MM-DD (생략하면 가장 최근 모집일)',
+                           이용자='특정 디스코드 이용자만 조회', 가문명='특정 가문명만 조회 (용병 포함)')
+    async def history(interaction: discord.Interaction, 날짜: str | None = None,
+                      이용자: discord.User | None = None, 가문명: str | None = None):
+        if 날짜 is None:
+            event = bot.store.latest_event(interaction.guild_id)
+            if event is None:
+                raise ValueError('조회할 모집이 없습니다.')
+            날짜 = event['starts'][:10]
+        try:
+            날짜 = datetime.strptime(날짜, '%Y-%m-%d').strftime('%Y-%m-%d')
+        except ValueError:
+            raise ValueError('날짜는 2026-11-06 형식으로 입력해 주세요.')
+        rows = bot.store.participation_history(interaction.guild_id, 날짜,
+                    이용자.id if 이용자 else None, 가문명)
+        heading = f'{날짜} 참여 기록 (한국시간)'
+        lines = []
+        for row in rows:
+            stamp = datetime.fromisoformat(row['at'])
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=KST)
+            name = row['display_name'] or f"[{row['guild_name']}] {row['nickname']}"
+            role = f" · {row['priority_role']} 우선" if row['priority_role'] else ''
+            lines.append(f"{stamp.astimezone(KST):%Y-%m-%d %H:%M:%S} | {name} | {row['action']}"
+                         f" | {row['status']}{role} | 처리자 ID: {row['actor_id']}"
+                         f" | 모집: {row['event_name']} ({row['event_id']})")
+        text = heading + '\n\n' + ('\n'.join(lines) or '해당하는 기록이 없습니다.')
+        escaped = discord.utils.escape_markdown(text)
+        if len(escaped) > 1800:
+            await interaction.response.send_message(heading,
+                file=discord.File(io.BytesIO(text.encode('utf-8-sig')), filename='participation-history.txt'),
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        else:
+            await interaction.response.send_message(escaped,
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @bot.tree.command(name='시트상태', description='구글 스프레드시트 동기화 상태를 확인합니다.')
     @app_commands.guild_only()
