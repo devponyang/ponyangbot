@@ -17,6 +17,7 @@ from schedule import due_event_date, event_start, scheduled_capacity, cleanup_cu
 from identity import parse_display_name
 from welcome import WelcomeService
 from admin_panel import SchedulePanel
+from operations import backup_json, deliver_notifications, send_attendance_report, send_voice_reminder
 
 log = logging.getLogger('ponyangbot')
 
@@ -239,6 +240,7 @@ class NodeBot(commands.Bot):
     def __init__(self, store, sheets, guild_id, auto_channel_id=None, start_time='21:00'):
         intents = discord.Intents.default()
         intents.members = True
+        intents.voice_states = True
         super().__init__(command_prefix=commands.when_mentioned, intents=intents,
                          allowed_mentions=discord.AllowedMentions.none())
         self.store = store
@@ -254,6 +256,10 @@ class NodeBot(commands.Bot):
         self.legacy_tabs_archived = False
         self.welcome_service = WelcomeService(self)
         self.posts_refreshed = False
+        self.backup_error = False
+        self.voice_error_detail = None
+        self.report_error_detail = None
+        self.operations_channel_id = int(os.getenv("OPERATIONS_CHANNEL_ID", "1568220782516113570"))
 
     async def on_ready(self):
         if self.posts_refreshed:
@@ -290,8 +296,14 @@ class NodeBot(commands.Bot):
         await self.tree.sync(guild=guild)
         self.sync_sheet.start()
         self.auto_recruit.start()
+        self.operations.start()
 
     async def cleanup_due_events(self, now):
+        cutoff = cleanup_cutoff(now)
+        if any(e['guild_id'] == str(self.guild_id) and not e.get('archived')
+               and datetime.strptime(e['starts'], '%Y-%m-%d %H:%M').replace(tzinfo=KST) <= cutoff
+               for e in self.store.all_events()):
+            backup_json(self.store, 'before-cleanup', now)
         changed = self.store.archive_due(self.guild_id, cleanup_cutoff(now))
         # Synchronize immediately; the same lock protects the regular 5-minute job.
         if changed:
@@ -363,6 +375,48 @@ class NodeBot(commands.Bot):
     async def before_auto_recruit(self):
         await self.wait_until_ready()
 
+    @tasks.loop(seconds=30)
+    async def operations(self):
+        try:
+            path = backup_json(self.store, 'daily')
+            if path:
+                self.store.queue_log(f'일일 JSON 백업 완료: {path.name}', self.guild_id)
+            self.backup_error = False
+        except Exception as error:
+            log.warning('Backup failed (%s); retrying in 30 seconds', type(error).__name__)
+            if not self.backup_error:
+                self.backup_error = True
+                try:
+                    self.store.queue_log('JSON 백업 실패 — VM 디스크 및 쓰기 권한을 확인하세요.', self.guild_id)
+                except OSError:
+                    pass
+        try:
+            await send_attendance_report(self)
+            self.report_error_detail = None
+        except Exception as error:
+            detail = sync_error_message(error)
+            log.warning('Attendance report failed: %s', detail)
+            if detail != self.report_error_detail:
+                self.store.queue_log(f'참여 현황 전송 실패: {detail}', self.guild_id)
+                self.report_error_detail = detail
+        try:
+            await send_voice_reminder(self)
+            self.voice_error_detail = None
+        except Exception as error:
+            detail = sync_error_message(error)
+            log.warning('Voice reminder failed: %s', detail)
+            if detail != self.voice_error_detail:
+                self.store.queue_log(f'음성 미참여 안내 실패: {detail}', self.guild_id)
+                self.voice_error_detail = detail
+        try:
+            await deliver_notifications(self)
+        except Exception as error:
+            log.warning('Operations failed (%s); retrying in 30 seconds', type(error).__name__)
+
+    @operations.before_loop
+    async def before_operations(self):
+        await self.wait_until_ready()
+
     @tasks.loop(minutes=5)
     async def sync_sheet(self):
         async with self.sheet_sync_lock:
@@ -381,14 +435,20 @@ class NodeBot(commands.Bot):
             event = self.store.latest_event(self.guild_id)
             await asyncio.to_thread(self.sheets.sync, roster, event)
             self.synced_version = version
+            if self.sync_error:
+                self.store.queue_log('시트 동기화 정상 복구', self.guild_id)
             self.sync_error = False
             self.sync_error_detail = ''
         except Exception as error:
+            detail = sync_error_message(error)
+            if not self.sync_error or self.sync_error_detail != detail:
+                self.store.queue_log(f'시트 동기화 오류: {detail}', self.guild_id)
             self.sync_error = True
-            self.sync_error_detail = sync_error_message(error)
+            self.sync_error_detail = detail
             log.warning('Sheet sync failed: %s; retrying in 5 minutes', self.sync_error_detail)
 
     async def close(self):
+        self.operations.cancel()
         self.auto_recruit.cancel()
         self.sync_sheet.cancel()
         await super().close()

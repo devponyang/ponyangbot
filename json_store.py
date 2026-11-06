@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import tempfile
+from uuid import uuid4
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -63,8 +64,58 @@ class Store:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
-    def _commit(self, data):
-        data['revision'] += 1
+    @staticmethod
+    def _queue(data, kind, text, guild_id, event_id=None, user_id=None):
+        data.setdefault('notifications', []).append(dict(id=uuid4().hex, kind=kind, text=text,
+            guild_id=str(guild_id), event_id=event_id, user_id=user_id,
+            at=datetime.now(KST).isoformat(), done=False))
+
+    def mark_report_sent(self, key, message_id):
+        data = copy.deepcopy(self.data)
+        data.setdefault('daily_reports', {})[key] = str(message_id)
+        self._commit(data, bump_revision=False)
+
+    def queue_log(self, text, guild_id):
+        data = copy.deepcopy(self.data)
+        self._queue(data, 'log', text, guild_id)
+        self._commit(data, bump_revision=False)
+
+    def finish_notification(self, notification_id, failure=None):
+        data = copy.deepcopy(self.data)
+        row = next(r for r in data.get('notifications', []) if r['id'] == notification_id)
+        row['done'] = True
+        if failure:
+            self._queue(data, 'log', failure, row['guild_id'])
+        # Keep pending work and the most recent 1000 completed deliveries.
+        done = [r for r in data['notifications'] if r['done']][-1000:]
+        data['notifications'] = [r for r in data['notifications'] if not r['done']] + done
+        self._commit(data, bump_revision=False)
+
+    def _commit(self, data, bump_revision=True):
+        old_history = len(self.data.get('participation_history', []))
+        events = {e['id']: e for e in data['events']}
+        for row in data.get('participation_history', [])[old_history:]:
+            if row['action'].startswith('기존 마지막'):
+                continue
+            event = events[row['event_id']]
+            name = row['display_name'] or f"[{row['guild_name']}] {row['nickname']}"
+            text = (f"{row['action']} | {name} | {row['status']}"
+                    f" | 역할: {row['priority_role'] or '일반'} | 처리자: {row['actor_id']}"
+                    f"\n모집: {event['starts']} {event['name']} ({event['id']})")
+            self._queue(data, 'log', text, row['guild_id'])
+            if row['action'] == '자동 순번 변경' and row['status'] == '참여':
+                self._queue(data, 'promotion', name, row['guild_id'], row['event_id'], row['user_id'])
+        old_events = {e['id']: e for e in self.data['events']}
+        for event in data['events']:
+            old = old_events.get(event['id'])
+            if old and not old.get('archived') and event.get('archived'):
+                self._queue(data, 'log', f"모집 정리 완료: {event['starts']} {event['name']}", event['guild_id'])
+        for event_id, post in data['auto_posts'].items():
+            if event_id not in self.data['auto_posts']:
+                event = events[event_id]
+                self._queue(data, 'log', f"모집 게시: {event['starts']} {event['name']} · {event['capacity']}인", event['guild_id'])
+        if bump_revision:
+            data['revision'] += 1
         self._save(data)
         self.data = data
 
@@ -78,13 +129,17 @@ class Store:
     def weekly_tiers(self, guild_id):
         return list(self.data.get('weekly_tiers', {}).get(str(guild_id), [0, 1, 1, 1, 1, 0, 1]))
 
-    def set_weekly_tier(self, guild_id, weekday, tier):
+    def set_weekly_tier(self, guild_id, weekday, tier, actor_id=None):
         if weekday not in range(7) or tier not in ((0, 3, 4, 5) if weekday == 5 else (0, 1, 2)):
             raise ValueError('토요일은 미진행 또는 공성전, 다른 요일은 미진행·1단·2단만 가능합니다.')
         data = copy.deepcopy(self.data)
         tiers = self.weekly_tiers(guild_id)
+        previous_tier = tiers[weekday]
         tiers[weekday] = tier
         data.setdefault('weekly_tiers', {})[str(guild_id)] = tiers
+        labels = {0: '미진행', 1: '1단', 2: '2단', 3: '제한 발레노스 촌성', 4: '제한 발렌시아 성', 5: '무제한 메디아 성'}
+        if previous_tier != tier:
+            self._queue(data, 'log', f"일정 변경: {'월화수목금토일'[weekday]}요일 {labels[previous_tier]} → {labels[tier]} | 관리자: {actor_id or '미상'}", guild_id)
         self._commit(data)
 
     def all_events(self):

@@ -74,6 +74,9 @@ class Sheets:
             return response.json()
 
     def lookup_role(self, guild, family):
+        return find_role(self.role_rows(), guild, family)
+
+    def role_rows(self):
         meta = self.request('GET', params={'fields': 'sheets(properties)'})
         props = next((s['properties'] for s in meta['sheets']
                       if ''.join(s['properties']['title'].split()) == '전체직업시트'), None)
@@ -82,7 +85,7 @@ class Sheets:
         title = props['title'].replace("'", "''")
         rows = self.request('GET', '/values/' + quote(f"'{title}'", safe=''),
                             params={'valueRenderOption': 'FORMATTED_VALUE'}).get('values', [])
-        return find_role(rows, guild, family)
+        return rows
 
     def archive_legacy_tabs(self, backup_dir):
         """Delete only the two retired bot tabs, after a durable JSON backup."""

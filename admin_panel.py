@@ -74,7 +74,7 @@ class SchedulePanel(discord.ui.View):
         discord.SelectOption(label='2단 거점', value='2')])
     async def select_tier(self, interaction, select):
         try:
-            self.store.set_weekly_tier(self.guild_id, self.weekday, int(select.values[0]))
+            self.store.set_weekly_tier(self.guild_id, self.weekday, int(select.values[0]), actor_id=interaction.user.id)
         except ValueError as error:
             await interaction.response.send_message(str(error), ephemeral=True)
             return
