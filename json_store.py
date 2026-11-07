@@ -263,6 +263,37 @@ class Store:
         next(e for e in data['events'] if e['id'] == event_id)['closed'] = 1
         self._commit(data)
 
+    def upgrade_today_event(self, event_id, guild_id, actor_id, now):
+        from schedule import capacity_for
+
+        event = self.latest_event(guild_id)
+        today = now.astimezone(KST).date()
+        if (not event or event['id'] != event_id or event['starts'][:10] != today.isoformat()
+                or event['closed'] or event.get('archived')):
+            raise ValueError('현재 모집 중인 오늘 거점만 변경할 수 있습니다.')
+        capacity = capacity_for(today.weekday(), 2)
+        if not capacity or '공성전' in event['name']:
+            raise ValueError('공성전은 2단 거점으로 변경할 수 없습니다.')
+        if event['name'] == '2단거점' and event['capacity'] == capacity:
+            return event
+        data = copy.deepcopy(self.data)
+        target = next(e for e in data['events'] if e['id'] == event_id)
+        target.update(name='2단거점', capacity=capacity)
+        if 'participation_history' not in data:
+            data['participation_history'] = self._legacy_history()
+        ranked = self._rank([p for p in data['participants'] if p['event_id'] == event_id and p['status'] != '취소'])
+        for index, p in enumerate(ranked):
+            status = '참여' if index < capacity else '대기'
+            if p['status'] != status:
+                p['status'] = status
+                data['participation_history'].append(dict(event_id=event_id, guild_id=str(guild_id),
+                    user_id=p['user_id'], display_name=p.get('display_name', ''), nickname=p['nickname'],
+                    guild_name=p.get('guild_name', ''), action='자동 순번 변경', status=status,
+                    priority_role=p.get('priority_role', ''), at=now.isoformat(), actor_id=str(actor_id)))
+        self._queue(data, 'log', f"{today} 모집 변경: {event['name']} → 2단거점 · {capacity}인 | 관리자: {actor_id}", guild_id)
+        self._commit(data)
+        return self.event(event_id, guild_id)
+
     def roster(self, guild_id, size=ROSTER_SIZE):
         event = self.latest_event(guild_id)
         if event is None:

@@ -457,6 +457,31 @@ class NodeBot(commands.Bot):
 def make_bot(store, sheets, guild_id, auto_channel_id=None, start_time='21:00'):
     bot = NodeBot(store, sheets, guild_id, auto_channel_id, start_time)
 
+    @bot.tree.command(name='오늘거점2단', description='오늘 모집 글과 기존 신청 명단을 그대로 사용해 2단으로 변경합니다.')
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def upgrade_today(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        event = store.latest_event(interaction.guild_id)
+        if not event or event['starts'][:10] != datetime.now(KST).date().isoformat():
+            raise ValueError('오늘 날짜로 게시된 모집이 없습니다.')
+        post = store.data['auto_posts'].get(event['id'])
+        if not post or post.get('deleted'):
+            raise ValueError('오늘 모집 글을 찾지 못했습니다.')
+        channel = bot.get_channel(int(post['channel_id'])) or await bot.fetch_channel(int(post['channel_id']))
+        if channel.guild.id != interaction.guild_id:
+            raise ValueError('모집 채널의 서버가 일치하지 않습니다.')
+        message = await channel.fetch_message(int(post['message_id']))
+        if message.author.id != bot.user.id:
+            raise ValueError('봇이 작성한 모집 글을 찾지 못했습니다.')
+        event = store.upgrade_today_event(event['id'], interaction.guild_id, interaction.user.id, datetime.now(KST))
+        try:
+            await message.edit(content=event_content(event), allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            raise ValueError('2단 설정은 저장했지만 공지를 수정하지 못했습니다. 같은 명령을 다시 실행해 주세요.') from None
+        await interaction.followup.send(f"오늘 거점을 2단 {event['capacity']}인으로 변경했습니다. {message.jump_url}", ephemeral=True)
+
     @bot.tree.command(name='관리자패널', description='요일별 거점 단계와 정기 모집 설정을 변경합니다.')
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_guild=True)
