@@ -218,7 +218,7 @@ def backup_json(store, reason, now=None):
     return target
 
 
-LOG_HEADER = '**운영 기록 · 최근 순**'
+LOG_HEADER = '```less\n운영 기록 · 최근 순'
 
 
 async def update_operations_message(bot):
@@ -231,11 +231,12 @@ async def update_operations_message(bot):
     content = LOG_HEADER
     for row in logs:
         time = datetime.fromisoformat(row['at']).astimezone(KST).strftime('%m/%d %H:%M:%S')
-        entry = discord.utils.escape_markdown(row['text'])[:1400]
+        entry = row['text'][:1400].replace('`', 'ˋ')
         line = f'\n\n[{time}] {entry}'
-        if len(content + line) > 1900:
+        if len(content + line) + 4 > 1900:
             break
         content += line
+    content += '\n```'
     channel = bot.get_channel(bot.operations_channel_id) or await bot.fetch_channel(bot.operations_channel_id)
     if channel.guild.id != bot.guild_id:
         raise ValueError('운영 기록 채널의 서버가 다릅니다.')
@@ -251,7 +252,7 @@ async def update_operations_message(bot):
     if message is None:
         # Recover a newly sent dashboard if the process stopped before saving its ID.
         async for candidate in channel.history(limit=100):
-            if candidate.author.id == bot.user.id and candidate.content.startswith(LOG_HEADER):
+            if candidate.author.id == bot.user.id and candidate.content.startswith((LOG_HEADER, '**운영 기록 · 최근 순**')):
                 message = candidate
                 await message.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
                 break
