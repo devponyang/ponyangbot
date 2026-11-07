@@ -17,7 +17,7 @@ from schedule import due_event_date, event_start, scheduled_capacity, cleanup_cu
 from identity import parse_display_name
 from welcome import WelcomeService
 from admin_panel import SchedulePanel
-from operations import backup_json, deliver_notifications, send_attendance_report, send_voice_reminder
+from operations import delete_due_reports, backup_json, deliver_notifications, send_attendance_report, send_voice_reminder
 
 log = logging.getLogger('ponyangbot')
 
@@ -377,6 +377,10 @@ class NodeBot(commands.Bot):
 
     @tasks.loop(seconds=30)
     async def operations(self):
+        try:
+            await delete_due_reports(self)
+        except Exception as error:
+            log.warning('Report cleanup failed (%s); retrying', type(error).__name__)
         try:
             path = backup_json(self.store, 'daily')
             if path:

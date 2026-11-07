@@ -35,7 +35,12 @@ class OperationsTests(unittest.IsolatedAsyncioTestCase):
         self.store.create('e', 1, '거점', '2030-01-01 21:00', 1)
         self.bot = make_bot(self.store, Mock(), 1)
         self.addAsyncCleanup(self.bot.close)
-        self.channel = Mock(guild=Mock(id=1), send=AsyncMock())
+        async def empty_history(**kwargs):
+            for message in []:
+                yield message
+        self.message = Mock(id=456, edit=AsyncMock())
+        self.channel = Mock(guild=Mock(id=1), send=AsyncMock(return_value=self.message), history=empty_history)
+        self.channel.get_partial_message.return_value = self.message
         self.bot.get_channel = Mock(return_value=self.channel)
         self.user = Mock(send=AsyncMock())
         self.bot.get_user = Mock(return_value=self.user)
@@ -57,6 +62,21 @@ class OperationsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.channel.send.await_count, count)
         self.user.send.assert_awaited_once()
         self.assertEqual(self.store.revision, version)
+
+    async def test_new_logs_edit_existing_message_and_retry_failed_edit(self):
+        self.store.queue_log('첫 기록', 1)
+        await deliver_notifications(self.bot)
+        self.assertTrue(self.channel.send.call_args.kwargs['silent'])
+        self.store.queue_log('다음 기록', 1)
+        self.message.edit.side_effect = OSError('offline')
+        await deliver_notifications(self.bot)
+        self.assertTrue(any(not r['done'] for r in self.store.data['notifications']))
+        self.message.edit.side_effect = None
+        await deliver_notifications(self.bot)
+        self.channel.send.assert_awaited_once()
+        content = self.message.edit.call_args.kwargs['content']
+        self.assertLess(content.index('다음 기록'), content.index('첫 기록'))
+        self.assertFalse(self.message.edit.call_args.kwargs['allowed_mentions'].everyone)
 
     async def test_dm_forbidden_logged_and_no_retry(self):
         self.promote()

@@ -70,9 +70,11 @@ class Store:
             guild_id=str(guild_id), event_id=event_id, user_id=user_id,
             at=datetime.now(KST).isoformat(), done=False))
 
-    def mark_report_sent(self, key, message_id):
+    def mark_report_sent(self, key, message_id, channel_id=None):
         data = copy.deepcopy(self.data)
         data.setdefault('daily_reports', {})[key] = str(message_id)
+        if channel_id is not None:
+            data.setdefault('report_channels', {})[key] = str(channel_id)
         self._commit(data, bump_revision=False)
 
     def queue_log(self, text, guild_id):
@@ -89,6 +91,17 @@ class Store:
         # Keep pending work and the most recent 1000 completed deliveries.
         done = [r for r in data['notifications'] if r['done']][-1000:]
         data['notifications'] = [r for r in data['notifications'] if not r['done']] + done
+        self._commit(data, bump_revision=False)
+
+    def finish_operations_logs(self, key, message_id, delivered):
+        data = copy.deepcopy(self.data)
+        data.setdefault('operations_messages', {})[key] = str(message_id)
+        for row in data['notifications']:
+            if row['id'] in delivered:
+                row['done'] = True
+        pending = [r for r in data['notifications'] if not r['done']]
+        done = sorted((r for r in data['notifications'] if r['done']), key=lambda r: r['at'])
+        data['notifications'] = pending + done[-1000:]
         self._commit(data, bump_revision=False)
 
     def _commit(self, data, bump_revision=True):

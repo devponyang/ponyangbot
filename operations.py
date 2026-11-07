@@ -5,6 +5,7 @@ import copy
 import json
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime, timedelta
 
@@ -65,7 +66,7 @@ async def send_voice_reminder(bot, now=None):
             continue
         marker = f'음성확인 ID: {part_key}'
         if marker in seen:
-            bot.store.mark_report_sent(part_key, seen[marker])
+            bot.store.mark_report_sent(part_key, seen[marker], channel_id=bot.auto_channel_id)
             continue
         text = (f"{plan['title']} 음성채널 참여 확인 ({plan['checked_at']} 기준)\n"
                 f"지정 음성채널 미참여: {len(plan['missing'])}명\n"
@@ -77,7 +78,7 @@ async def send_voice_reminder(bot, now=None):
         message = await channel.send(content=content, embed=embed,
             allowed_mentions=discord.AllowedMentions(everyone=False, roles=False,
                 users=[discord.Object(id=int(uid)) for uid in recipients], replied_user=False))
-        bot.store.mark_report_sent(part_key, message.id)
+        bot.store.mark_report_sent(part_key, message.id, channel_id=bot.auto_channel_id)
     bot.store.mark_report_sent(key, 'complete')
 
 
@@ -108,7 +109,7 @@ def attendance_text(event, members, waiting_count, rows):
 async def send_attendance_report(bot, now=None):
     now = (now or datetime.now(KST)).astimezone(KST)
     # Do not post yesterday's or already-cleared roster after the cleanup window.
-    if not (20, 30) <= (now.hour, now.minute) < (21, 10):
+    if not (20, 30) <= (now.hour, now.minute) < (21, 0):
         return
     event = bot.store.latest_event(bot.guild_id)
     if not event or event.get('archived') or event['starts'][:10] != now.strftime('%Y-%m-%d'):
@@ -125,7 +126,7 @@ async def send_attendance_report(bot, now=None):
     marker = f'참여현황 ID: {key}'
     async for message in channel.history(limit=None, after=now.replace(hour=20, minute=30, second=0, microsecond=0)):
         if message.author.id == bot.user.id and any(embed.footer.text == marker for embed in message.embeds):
-            bot.store.mark_report_sent(key, message.id)
+            bot.store.mark_report_sent(key, message.id, channel_id=bot.auto_channel_id)
             return
     recipient = discord.Object(id=358871896449613824)
     members = bot.store.members(event['id'])
@@ -136,7 +137,41 @@ async def send_attendance_report(bot, now=None):
     embed.set_footer(text=marker)
     message = await channel.send(content=f'<@{recipient.id}>', embed=embed,
         allowed_mentions=discord.AllowedMentions(everyone=False, users=[recipient], roles=False, replied_user=False))
-    bot.store.mark_report_sent(key, message.id)
+    bot.store.mark_report_sent(key, message.id, channel_id=bot.auto_channel_id)
+
+
+async def delete_due_reports(bot, now=None):
+    now = (now or datetime.now(KST)).astimezone(KST)
+    today = now.date().isoformat()
+    channels = bot.store.data.get('report_channels', {})
+    for key, message_id in list(bot.store.data.get('daily_reports', {}).items()):
+        if not str(message_id).isdigit():
+            continue
+        match = re.fullmatch(rf'(voice:)?{bot.guild_id}:(\d{{4}}-\d{{2}}-\d{{2}})(:\d+)?', key)
+        if not match or bool(match[1]) != bool(match[3]):
+            continue
+        day = match[2]
+        if day > today or (day == today and now.hour < 21):
+            continue
+        # For pre-upgrade posts only adopt today's IDs, not historical channel messages.
+        channel_id = channels.get(key) or (bot.auto_channel_id if day == today else None)
+        if not channel_id:
+            continue
+        marker = ('음성확인 ID: ' if match[1] else '참여현황 ID: ') + key
+        try:
+            channel = bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
+            if channel.guild.id != bot.guild_id:
+                continue
+            message = await channel.fetch_message(int(message_id))
+            if message.author.id != bot.user.id or not any(e.footer.text == marker for e in message.embeds):
+                continue
+            await message.delete()
+        except discord.NotFound:
+            pass
+        except discord.HTTPException as error:
+            log.warning('Report deletion failed for %s (%s); retrying', key, type(error).__name__)
+            continue
+        bot.store.mark_report_sent(key, 'deleted')
 
 
 def backup_json(store, reason, now=None):
@@ -183,46 +218,74 @@ def backup_json(store, reason, now=None):
     return target
 
 
+LOG_HEADER = '**운영 기록 · 최근 순**'
+
+
+async def update_operations_message(bot):
+    logs = sorted((r for r in bot.store.data.get('notifications', [])
+                   if r['guild_id'] == str(bot.guild_id) and r['kind'] == 'log'),
+                  key=lambda r: r['at'], reverse=True)
+    pending = {r['id'] for r in logs if not r['done']}
+    if not pending:
+        return
+    content = LOG_HEADER
+    for row in logs:
+        time = datetime.fromisoformat(row['at']).astimezone(KST).strftime('%m/%d %H:%M:%S')
+        entry = discord.utils.escape_markdown(row['text'])[:1400]
+        line = f'\n\n[{time}] {entry}'
+        if len(content + line) > 1900:
+            break
+        content += line
+    channel = bot.get_channel(bot.operations_channel_id) or await bot.fetch_channel(bot.operations_channel_id)
+    if channel.guild.id != bot.guild_id:
+        raise ValueError('운영 기록 채널의 서버가 다릅니다.')
+    key = f'{bot.guild_id}:{bot.operations_channel_id}'
+    saved = bot.store.data.get('operations_messages', {}).get(key)
+    message = None
+    if saved:
+        try:
+            message = channel.get_partial_message(int(saved))
+            await message.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
+        except discord.NotFound:
+            message = None
+    if message is None:
+        # Recover a newly sent dashboard if the process stopped before saving its ID.
+        async for candidate in channel.history(limit=100):
+            if candidate.author.id == bot.user.id and candidate.content.startswith(LOG_HEADER):
+                message = candidate
+                await message.edit(content=content, allowed_mentions=discord.AllowedMentions.none())
+                break
+        if message is None:
+            message = await channel.send(content=content, silent=True, allowed_mentions=discord.AllowedMentions.none())
+    bot.store.finish_operations_logs(key, message.id, pending)
+
+
 async def deliver_notifications(bot):
     rows = [copy.deepcopy(r) for r in bot.store.data.get('notifications', [])
             if not r['done'] and r['guild_id'] == str(bot.guild_id)]
-    log_failed = False
-    batch = [r for r in rows if r['kind'] == 'promotion'][:50] + [r for r in rows if r['kind'] == 'log'][:50]
-    for row in batch:
-        if row['kind'] == 'log' and log_failed:
-            continue
+    for row in [r for r in rows if r['kind'] == 'promotion'][:50]:
         failure = None
         try:
-            if row['kind'] == 'log':
-                channel = bot.get_channel(bot.operations_channel_id) or await bot.fetch_channel(bot.operations_channel_id)
-                if getattr(getattr(channel, 'guild', None), 'id', None) != bot.guild_id:
-                    raise ValueError('운영 기록 채널의 서버가 다릅니다.')
-                timestamp = datetime.fromisoformat(row['at']).astimezone(KST).strftime('%m/%d %H:%M:%S')
-                content = discord.utils.escape_markdown(f"[{timestamp}] {row['text']}")
-                await channel.send(content=content[:1900], allowed_mentions=discord.AllowedMentions.none())
-            else:
-                event = bot.store.event(row['event_id'], bot.guild_id)
-                member = next((p for p in bot.store.members(event['id']) if p['user_id'] == row['user_id']), None)
-                if not member or event.get('archived') or event['closed']:
-                    bot.store.finish_notification(row['id'])
-                    continue
-                if not str(row['user_id']).isdigit():
-                    failure = f"승격 DM 불가: {row['text']} — 계정과 연결되지 않은 수동 용병입니다. 모집 {event['starts']}"
-                else:
-                    user = bot.get_user(int(row['user_id'])) or await bot.fetch_user(int(row['user_id']))
-                    post = bot.store.data['auto_posts'].get(event['id'])
-                    link = f"\nhttps://discord.com/channels/{bot.guild_id}/{post['channel_id']}/{post['message_id']}" if post else ''
-                    await user.send(f"{event['starts']} {event['name']}\n예비 인원에서 참여 인원으로 승격되었습니다!\n참여 인원 현황을 확인해 주세요.{link}",
-                                    allowed_mentions=discord.AllowedMentions.none())
-        except (discord.Forbidden, discord.NotFound) as error:
-            if row['kind'] == 'log':
-                log.warning('Operations log delivery failed (%s); retrying', type(error).__name__)
-                log_failed = True
+            event = bot.store.event(row['event_id'], bot.guild_id)
+            member = next((p for p in bot.store.members(event['id']) if p['user_id'] == row['user_id']), None)
+            if not member or event.get('archived') or event['closed']:
+                bot.store.finish_notification(row['id'])
                 continue
+            if not str(row['user_id']).isdigit():
+                failure = f"승격 DM 불가: {row['text']} — 계정과 연결되지 않은 수동 용병입니다. 모집 {event['starts']}"
+            else:
+                user = bot.get_user(int(row['user_id'])) or await bot.fetch_user(int(row['user_id']))
+                post = bot.store.data['auto_posts'].get(event['id'])
+                link = f"\nhttps://discord.com/channels/{bot.guild_id}/{post['channel_id']}/{post['message_id']}" if post else ''
+                await user.send(f"{event['starts']} {event['name']}\n예비 인원에서 참여 인원으로 승격되었습니다!\n참여 인원 현황을 확인해 주세요.{link}",
+                                allowed_mentions=discord.AllowedMentions.none())
+        except (discord.Forbidden, discord.NotFound) as error:
             failure = f"승격 DM 실패: {row['text']} ({row['user_id']}) · {type(error).__name__} · 모집 {row['event_id']}"
         except (discord.HTTPException, OSError, ValueError) as error:
             log.warning('Notification delivery failed (%s); retrying', type(error).__name__)
-            if row['kind'] == 'log':
-                log_failed = True
             continue
         bot.store.finish_notification(row['id'], failure)
+    try:
+        await update_operations_message(bot)
+    except (discord.HTTPException, OSError, ValueError) as error:
+        log.warning('Operations log update failed (%s); retrying', type(error).__name__)
