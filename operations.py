@@ -115,29 +115,43 @@ async def send_attendance_report(bot, now=None):
     if not event or event.get('archived') or event['starts'][:10] != now.strftime('%Y-%m-%d'):
         return
     key = f"{bot.guild_id}:{now:%Y-%m-%d}"
-    if key in bot.store.data.get('daily_reports', {}):
-        return
-    channel_id = bot.auto_channel_id
-    if not channel_id:
-        raise ValueError('자동 모집 채널을 설정해 주세요.')
-    channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
-    if channel.guild.id != bot.guild_id:
-        raise ValueError('참여 현황 채널의 서버가 다릅니다.')
-    marker = f'참여현황 ID: {key}'
-    async for message in channel.history(limit=None, after=now.replace(hour=20, minute=30, second=0, microsecond=0)):
-        if message.author.id == bot.user.id and any(embed.footer.text == marker for embed in message.embeds):
-            bot.store.mark_report_sent(key, message.id, channel_id=bot.auto_channel_id)
-            return
-    recipient = discord.Object(id=358871896449613824)
-    members = bot.store.members(event['id'])
-    waiting = len(bot.store.members(event['id'], waiting=True))
-    rows = await asyncio.to_thread(bot.sheets.role_rows) if members else []
-    text = attendance_text(event, members, waiting, rows)
-    embed = discord.Embed(description=text[:4000])
-    embed.set_footer(text=marker)
-    message = await channel.send(content=f'<@{recipient.id}>', embed=embed,
-        allowed_mentions=discord.AllowedMentions(everyone=False, users=[recipient], roles=False, replied_user=False))
-    bot.store.mark_report_sent(key, message.id, channel_id=bot.auto_channel_id)
+    archive_channel_id = 1391293367010197606
+    destinations = [(f'archive:{key}', archive_channel_id)]
+    if bot.auto_channel_id and bot.auto_channel_id != archive_channel_id:
+        destinations.insert(0, (key, bot.auto_channel_id))
+    text = bot.store.data.get('attendance_snapshots', {}).get(key)
+    errors = []
+    for report_key, channel_id in destinations:
+        if report_key in bot.store.data.get('daily_reports', {}):
+            continue
+        try:
+            channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+            if channel.guild.id != bot.guild_id:
+                raise ValueError('참여 현황 채널의 서버가 다릅니다.')
+            marker = f'참여현황 ID: {report_key}'
+            async for message in channel.history(limit=None, after=now.replace(hour=20, minute=30, second=0, microsecond=0)):
+                if message.author.id == bot.user.id and any(embed.footer.text == marker for embed in message.embeds):
+                    break
+            else:
+                if text is None:
+                    members = bot.store.members(event['id'])
+                    waiting = len(bot.store.members(event['id'], waiting=True))
+                    rows = await asyncio.to_thread(bot.sheets.role_rows) if members else []
+                    text = attendance_text(event, members, waiting, rows)[:4000]
+                    bot.store.save_attendance_snapshot(key, text)
+                embed = discord.Embed(description=text)
+                embed.set_footer(text=marker)
+                if channel_id == bot.auto_channel_id:
+                    recipient = discord.Object(id=358871896449613824)
+                    message = await channel.send(content=f'<@{recipient.id}>', embed=embed,
+                        allowed_mentions=discord.AllowedMentions(everyone=False, users=[recipient], roles=False, replied_user=False))
+                else:
+                    message = await channel.send(embed=embed, silent=True, allowed_mentions=discord.AllowedMentions.none())
+            bot.store.mark_report_sent(report_key, message.id, channel_id=channel_id)
+        except (discord.HTTPException, OSError, ValueError) as error:
+            errors.append(f'{channel_id}: {error}')
+    if errors:
+        raise ValueError('참여 현황 게시 실패 — ' + ', '.join(errors))
 
 
 async def delete_due_reports(bot, now=None):

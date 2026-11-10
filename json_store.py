@@ -70,6 +70,11 @@ class Store:
             guild_id=str(guild_id), event_id=event_id, user_id=user_id,
             at=datetime.now(KST).isoformat(), done=False))
 
+    def save_attendance_snapshot(self, key, text):
+        data = copy.deepcopy(self.data)
+        data.setdefault('attendance_snapshots', {})[key] = text
+        self._commit(data, bump_revision=False)
+
     def mark_report_sent(self, key, message_id, channel_id=None):
         data = copy.deepcopy(self.data)
         data.setdefault('daily_reports', {})[key] = str(message_id)

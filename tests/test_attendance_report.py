@@ -3,7 +3,7 @@ from datetime import datetime
 from unittest.mock import Mock, AsyncMock
 from storage import Store, KST
 from bot import make_bot
-from operations import attendance_text, send_attendance_report
+from operations import attendance_text, send_attendance_report, delete_due_reports
 
 class ReportTests(unittest.IsolatedAsyncioTestCase):
     async def test_report_timing_counts_recipient_and_once(self):
@@ -24,7 +24,16 @@ class ReportTests(unittest.IsolatedAsyncioTestCase):
             messages.append(msg)
             return msg
         channel = Mock(guild=Mock(id=1), history=history, send=AsyncMock(side_effect=send))
-        bot.get_channel = Mock(return_value=channel)
+        archive_messages = []
+        async def archive_history(**kwargs):
+            for msg in archive_messages:
+                yield msg
+        async def archive_send(**kwargs):
+            msg = Mock(id=89, author=Mock(id=999), embeds=[kwargs['embed']])
+            archive_messages.append(msg)
+            return msg
+        archive = Mock(guild=Mock(id=1), history=archive_history, send=AsyncMock(side_effect=archive_send))
+        bot.get_channel = {456: channel, 1391293367010197606: archive}.get
         now = datetime(2026, 11, 6, 20, 30, tzinfo=KST)
         await send_attendance_report(bot, now.replace(minute=29))
         channel.send.assert_not_awaited()
@@ -41,7 +50,15 @@ class ReportTests(unittest.IsolatedAsyncioTestCase):
         store.data['daily_reports'].clear()
         await send_attendance_report(bot, now)
         channel.send.assert_awaited_once()
-        self.assertTrue(store.data['daily_reports'])
+        archive.send.assert_awaited_once()
+        self.assertEqual(archive.send.call_args.kwargs['embed'].description, kwargs['embed'].description)
+        self.assertTrue(archive.send.call_args.kwargs['silent'])
+        messages[0].delete = AsyncMock()
+        channel.fetch_message = AsyncMock(return_value=messages[0])
+        await delete_due_reports(bot, now.replace(hour=21, minute=0))
+        messages[0].delete.assert_awaited_once()
+        archive.fetch_message.assert_not_called()
+        self.assertEqual(store.data['daily_reports']['archive:1:2026-11-06'], '89')
         await send_attendance_report(bot, now.replace(hour=21, minute=10))
         channel.send.assert_awaited_once()
 
