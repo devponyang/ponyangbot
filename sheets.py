@@ -76,6 +76,16 @@ class Sheets:
     def lookup_role(self, guild, family):
         return find_role(self.role_rows(), guild, family)
 
+    def require_registered_family(self, guild, family):
+        title = f'{guild} 직업시트'
+        result = self.request('GET', '/values/' + quote(f"'{title}'!C:C", safe=''),
+                              params={'valueRenderOption': 'FORMATTED_VALUE'})
+        rows = result.get('values', [])
+        if not rows or not rows[0] or str(rows[0][0]).strip() != '가문명':
+            raise ValueError(f'{title}의 C열 가문명 헤더를 확인해 주세요.')
+        if not any(row and str(row[0]).strip() == family for row in rows[1:]):
+            raise ValueError(f'{title}에 가문명 `{family}`이 없습니다. 시트에 등록한 뒤 다시 신청해 주세요.')
+
     def role_rows(self):
         meta = self.request('GET', params={'fields': 'sheets(properties)'})
         props = next((s['properties'] for s in meta['sheets']

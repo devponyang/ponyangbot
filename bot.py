@@ -87,6 +87,22 @@ class EventView(discord.ui.View):
         if latest is None or latest['id'] != self.event_id:
             raise ValueError('이전 모집입니다. 가장 최근 모집 글에서 신청해 주세요.')
 
+    async def validate_registration(self, interaction, guild_name, family):
+        if guild_name == '용병':
+            roles = interaction.user.roles
+            if (any(r.id == 1209817194402291732 for r in roles)
+                    and not any(r.id == 1216730106966577182 or r.name in ('포도당', '싸움은나빵') for r in roles)):
+                return
+            raise ValueError('길드원은 [소속 길드] 가문명으로 신청해 주세요. 용병 신청에는 용병 역할이 필요합니다.')
+        if guild_name not in ('포도당', '싸움은나빵'):
+            raise ValueError('서버 닉네임의 길드 태그를 [포도당], [싸움은나빵], [용병] 중 소속에 맞게 변경해 주세요.')
+        try:
+            await asyncio.to_thread(self.bot.sheets.require_registered_family, guild_name, family)
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError('길드 직업시트를 확인하지 못했습니다. 잠시 후 다시 신청해 주세요.') from None
+
     @discord.ui.button(label='참여', style=discord.ButtonStyle.success, custom_id='join')
     async def join(self, interaction, button):
         self.require_current_event(interaction.guild_id)
@@ -95,6 +111,8 @@ class EventView(discord.ui.View):
             raise ValueError('이미 마감된 모집입니다.')
         guild_name, family = parse_display_name(interaction.user.display_name)
         await interaction.response.defer(ephemeral=True)
+        await self.validate_registration(interaction, guild_name, family)
+        self.require_current_event(interaction.guild_id)
         self.bot.store.participate(self.event_id, interaction.guild_id,
             interaction.user.id, str(interaction.user), family, guild_name=guild_name,
             display_name=interaction.user.display_name)
@@ -119,6 +137,7 @@ class EventView(discord.ui.View):
         require_priority_open(self.bot.store.event(self.event_id, interaction.guild_id))
         guild_name, family = parse_display_name(interaction.user.display_name)
         await interaction.response.defer(ephemeral=True)
+        await self.validate_registration(interaction, guild_name, family)
         try:
             async with self.bot.role_lookup_lock:
                 role = await asyncio.to_thread(self.bot.sheets.lookup_role, guild_name, family)
@@ -338,7 +357,7 @@ class NodeBot(commands.Bot):
             raise ValueError('자동 게시 채널은 설정한 서버의 텍스트 채널이어야 합니다.')
         marker = f'자동모집 ID: {event_id}'
         # Recover a send that succeeded just before a crash or network timeout.
-        window = (starts - timedelta(days=1)).replace(hour=21, minute=30)
+        window = (starts - timedelta(days=1)).replace(hour=22, minute=0)
         async for message in channel.history(limit=None, after=window):
             matches = any(e.footer.text == marker for e in message.embeds) or any(
                 getattr(button, 'custom_id', None) == f'node:{event_id}:join'

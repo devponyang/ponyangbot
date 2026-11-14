@@ -38,9 +38,9 @@ def scheduled_capacity(starts, tiers=None):
 
 
 def due_event_date(now, tiers=None):
-    """Latest 21:30 posting window; recover missed posts until that event day ends."""
+    """Latest 22:00 posting window; recover missed posts until that event day ends."""
     local = now.astimezone(KST)
-    day = local.date() + timedelta(days=1) if local.time() >= time(21, 30) else local.date()
+    day = local.date() + timedelta(days=1) if local.time() >= time(22, 0) else local.date()
     return day if capacity_for(day.weekday(), (tiers or DEFAULT_WEEKLY_TIERS)[day.weekday()]) else None
 
 

@@ -27,8 +27,8 @@ class WeeklySettingsTests(unittest.TestCase):
         tiers = [2, 2, 2, 2, 2, 0, 2]
         for day, expected in enumerate([40, 40, 40, 40, 50, None, 50], 2):
             self.assertEqual(scheduled_capacity(datetime(2026, 11, day, 21, tzinfo=KST), tiers), expected)
-        self.assertEqual(str(due_event_date(datetime(2026, 11, 1, 21, 30, tzinfo=KST), tiers)), '2026-11-02')
-        self.assertIsNone(due_event_date(datetime(2026, 11, 1, 21, 30, tzinfo=KST)))
+        self.assertEqual(str(due_event_date(datetime(2026, 11, 1, 22, 0, tzinfo=KST), tiers)), '2026-11-02')
+        self.assertIsNone(due_event_date(datetime(2026, 11, 1, 22, 0, tzinfo=KST)))
 
     def test_saturday_rejected_and_existing_event_preserved(self):
         store = Store(':memory:')
@@ -80,7 +80,7 @@ class PanelTests(unittest.IsolatedAsyncioTestCase):
         channel.history = history
         channel.send = AsyncMock(return_value=Mock(id=789))
         bot.get_channel = Mock(return_value=channel)
-        await bot.post_due_event(datetime(2026, 11, 5, 21, 30, tzinfo=KST))
+        await bot.post_due_event(datetime(2026, 11, 5, 22, 0, tzinfo=KST))
         event = store.latest_event(123)
         self.assertEqual((event['name'], event['capacity']), ('2단거점', 50))
         self.assertIn('칼페온, 올루키타', channel.send.call_args.kwargs['content'])
@@ -108,7 +108,7 @@ class PanelTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('총 100인', content)
             self.assertIn('정제수', content)
             self.assertNotIn('1단 제한', content)
-        upcoming = view.next_event_text(datetime(2026, 11, 6, 21, 30, tzinfo=KST))
+        upcoming = view.next_event_text(datetime(2026, 11, 6, 22, 0, tzinfo=KST))
         self.assertIn('토요일', upcoming)
         self.assertIn('무제한 메디아 성', upcoming)
         store.create('existing', 123, '2단거점', '2026-11-06 21:00', 50)
