@@ -19,8 +19,7 @@ def welcome_config(guild_id, alliance_id):
     if guild_id == alliance_id:
         return {'channel_id': ALLIANCE_CHANNEL_ID, 'title': '연맹 디스코드', 'roles': [
             ('❤️', '포도당', 1216730106966577182),
-            ('💛', 'Probe', 1553683323685969970),
-            ('💜', '고라파덕', None),
+            ('💜', '싸움은나빵', None),
             ('💙', '용병', 1209817194402291732)]}
     return None
 
@@ -29,7 +28,7 @@ def welcome_content(member, config):
     text = f"안녕하세요, <@{member.id}>님! **{config['title']}**에 오신 것을 환영합니다! 🎉\n\n"
     if member.guild.id != PODODANG_GUILD_ID:
         text += ('먼저 서버 닉네임을 **[길드] 닉네임** 형식으로 변경해 주세요.\n'
-                 '예: `[포도당] 디움` · `[P] 닉네임` · `[고라파덕] 닉네임`\n\n')
+                 '예: `[포도당] 디움` · `[싸움은나빵] 닉네임`\n\n')
     text += '아래 이모지를 클릭하여 본인에게 맞는 역할을 받아 주세요!\n\n'
     text += '\n'.join(f'{emoji} : {name}' for emoji, name, _ in config['roles'])
     return text
@@ -92,7 +91,13 @@ class WelcomeService:
             member = payload.member or guild.get_member(payload.user_id) or await guild.fetch_member(payload.user_id)
             if member.bot:
                 return
-            role = guild.get_role(int(role_id))
+            binding = next(((name, rid) for emoji, name, rid in config['roles']
+                            if emoji_key(emoji) == emoji_key(payload.emoji)), None)
+            if binding is None:
+                return
+            role = resolve_role(guild, *binding)
+            if role is None or role.id != int(role_id):
+                return
             me = guild.me
             if (role is None or role.managed or role.is_default() or me is None
                     or not me.guild_permissions.manage_roles or role >= me.top_role):

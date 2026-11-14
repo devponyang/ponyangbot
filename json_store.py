@@ -9,7 +9,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 KST = timezone(timedelta(hours=9))
-ROLE_LIMITS = {'화염탑': 2, '신기전': 1, '코끼리': 1, '불퇴': 1, '대포': 2}
+ROLE_LIMITS = {'화염탑': 2, '신기전': 1, '코끼리': 2, '불퇴': 2, '대포': 2}
 ROSTER_SIZE = 100
 
 

@@ -65,8 +65,8 @@ class ReportTests(unittest.IsolatedAsyncioTestCase):
     async def test_role_grouping_unmatched_and_guild_totals(self):
         roles = ['빌더', '대포', '코끼리', '불퇴', '신기전', '화탑', '화염탑',
                  '꼬장조', '꼬장오더', '본대', '오더', '서브오더', '공군', '알수없음']
-        members = [dict(guild_name='고라파덕', nickname=str(i)) for i in range(len(roles)+1)]
-        rows = [['길드', '가문명', '역할']] + [['고라파덕', str(i), role] for i, role in enumerate(roles)]
+        members = [dict(guild_name='싸움은나빵', nickname=str(i)) for i in range(len(roles)+1)]
+        rows = [['길드', '가문명', '역할']] + [['싸움은나빵', str(i), role] for i, role in enumerate(roles)]
         text = attendance_text(dict(starts='2026-11-06 21:00', name='2단거점', capacity=50), members, 3, rows)
-        for part in ('총 참여자: 15명', '고라파덕: 15명', '부속: 7명', '꼬장조: 2명', '본대: 4명', '기타/미확인: 2명', '예비: 3명'):
+        for part in ('총 참여자: 15명', '싸움은나빵: 15명', '부속: 7명', '꼬장조: 2명', '본대: 4명', '기타/미확인: 2명', '예비: 3명'):
             self.assertIn(part, text)

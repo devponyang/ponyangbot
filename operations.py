@@ -13,6 +13,7 @@ import discord
 
 from storage import KST
 from sheets import find_role
+from identity import RETIRED_GUILDS
 
 log = logging.getLogger('ponyangbot')
 
@@ -83,7 +84,8 @@ async def send_voice_reminder(bot, now=None):
 
 
 def attendance_text(event, members, waiting_count, rows):
-    guilds = Counter(p['guild_name'] or '미등록' for p in members)
+    guilds = Counter('기타(기존 신청)' if p['guild_name'].casefold() in RETIRED_GUILDS
+                     else p['guild_name'] or '미등록' for p in members)
     groups = Counter()
     details = Counter()
     for person in members:
@@ -96,7 +98,7 @@ def attendance_text(event, members, waiting_count, rows):
         details[role or '미확인'] += 1
     lines = [f"**{event['starts'][:10]} {event['name']} 참여 현황**",
              f"총 참여자: {len(members)}명 / 정원 {event['capacity']}명", f'예비: {waiting_count}명', '', '**길드별 참여자**']
-    for guild in dict.fromkeys(['포도당', 'Probe', '고라파덕', '용병'] + sorted(guilds)):
+    for guild in dict.fromkeys(['포도당', '싸움은나빵', '용병'] + sorted(guilds)):
         lines.append(f'{discord.utils.escape_markdown(guild)}: {guilds[guild]}명')
     lines += ['', '**역할별 참여자**']
     for group in ('부속', '꼬장조', '본대', '기타/미확인'):

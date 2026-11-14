@@ -45,7 +45,7 @@ class WelcomeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(message.add_reaction.await_count, len(config['roles']))
                 if guild_id != PODODANG_GUILD_ID:
                     self.assertIn('💜', store.welcome_message(88)['roles'])
-                    self.assertIn('💜 : 고라파덕', sent['content'])
+                    self.assertIn('💜 : 싸움은나빵', sent['content'])
                     self.assertNotIn('추가 예정', sent['content'])
                 else:
                     self.assertNotIn('💜', store.welcome_message(88)['roles'])
@@ -94,10 +94,10 @@ class WelcomeTests(unittest.IsolatedAsyncioTestCase):
         bot.fetch_channel.assert_not_awaited()
         bot.get_channel.assert_not_called()
 
-    async def test_gorapaduck_role_grant(self):
+    async def test_new_alliance_guild_role_grant(self):
         guild_id = 1209393579848507465
         guild = self.make_guild(guild_id)
-        role = next(r for r in guild.roles if r.name == '고라파덕')
+        role = next(r for r in guild.roles if r.name == '싸움은나빵')
         store = Store(':memory:')
         store.record_welcome(88, guild_id, 1209393580414603306, 77, {'💜': role.id})
         bot = Mock(store=store, guild_id=guild_id)
@@ -107,16 +107,16 @@ class WelcomeTests(unittest.IsolatedAsyncioTestCase):
             channel_id=1209393580414603306, user_id=77, emoji='💜', member=member))
         member.add_roles.assert_awaited_once_with(role, reason='환영 메시지 이모지 역할 선택')
 
-    async def test_gorapaduck_nickname_sheet_role_and_roster(self):
+    async def test_new_alliance_guild_nickname_sheet_role_and_roster(self):
         from identity import parse_display_name
         from sheets import find_role
-        for nickname in ('[고라파덕] 디움', '[고라파덕]디움'):
-            self.assertEqual(parse_display_name(nickname), ('고라파덕', '디움'))
-        rows = [['길드', '가문명', '역할'], ['고라파덕', '디움', '대포']]
-        role = find_role(rows, '고라파덕', '디움')
+        for nickname in ('[싸움은나빵] 디움', '[싸움은나빵]디움'):
+            self.assertEqual(parse_display_name(nickname), ('싸움은나빵', '디움'))
+        rows = [['길드', '가문명', '역할'], ['싸움은나빵', '디움', '대포']]
+        role = find_role(rows, '싸움은나빵', '디움')
         self.assertEqual(role, '대포')
         store = Store(':memory:')
         store.create('e', 123, '2단거점', '2030-01-01 21:00', 40)
-        store.participate('e', 123, 77, 'user', '디움', guild_name='고라파덕',
-                          display_name='[고라파덕] 디움', priority_role=role)
-        self.assertEqual(store.roster(123)[0], ['고라파덕', '디움'])
+        store.participate('e', 123, 77, 'user', '디움', guild_name='싸움은나빵',
+                          display_name='[싸움은나빵] 디움', priority_role=role)
+        self.assertEqual(store.roster(123)[0], ['싸움은나빵', '디움'])

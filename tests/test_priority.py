@@ -43,7 +43,7 @@ class PriorityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '일반 참여 버튼'):
                 self.store.participate('event2', 1, role+'extra', '', role+'extra', guild_name='포도당', priority_role=role)
             self.assertEqual(before, self.store.snapshot())
-        self.assertEqual(len(self.store.members('event2')), 7)
+        self.assertEqual(len(self.store.members('event2')), 9)
 
     def test_upgrade_normal_participant_and_waiter(self):
         self.join(1)
@@ -59,7 +59,9 @@ class PriorityTests(unittest.TestCase):
             self.store.participate('event', 1, 2, '', '다른가문', guild_name='Probe')
 
     def test_lookup_repeated_blocks_and_probe_alias(self):
-        self.assertEqual(parse_display_name('[P]디움'), ('Probe', '디움'))
+        for tag in ('P', 'Probe', '고라파덕'):
+            with self.assertRaisesRegex(ValueError, '이전 연맹'):
+                parse_display_name(f'[{tag}]디움')
         rows = [['길드', '가문명', '역 할', '', '길드', '가문명', '역 할', '', '길드', '가문명', '역 할'],
                 ['포도당', '가문1', '본대', '', 'Probe', '디움', '대포', '', '접어', '가문3', '화염탑']]
         self.assertEqual(find_role(rows, 'P', '디움'), '대포')
@@ -144,18 +146,18 @@ class PriorityButtonTests(unittest.IsolatedAsyncioTestCase):
         bot = make_bot(store, sheets, 1)
         view = EventView(bot, 'e')
         interaction = Mock(guild_id=1)
-        interaction.user = Mock(id=1, display_name='[P]디움')
+        interaction.user = Mock(id=1, display_name='[싸움은나빵]디움')
         interaction.response.defer = AsyncMock()
         interaction.response.send_message = AsyncMock()
         interaction.followup.send = AsyncMock()
         await view.priority.callback(interaction)
-        sheets.lookup_role.assert_called_once_with('Probe', '디움')
-        self.assertEqual(store.roster(1)[0], ['Probe', '디움'])
+        sheets.lookup_role.assert_called_once_with('싸움은나빵', '디움')
+        self.assertEqual(store.roster(1)[0], ['싸움은나빵', '디움'])
         self.assertIn('예비로 전환', interaction.followup.send.call_args.args[0])
         await view.members.callback(interaction)
         self.assertIn('예비 인원', interaction.response.send_message.call_args.args[0])
         # Network failures and ineligible roles cannot enroll a participant.
-        interaction.user = Mock(id=2, display_name='[P]다른가문')
+        interaction.user = Mock(id=2, display_name='[싸움은나빵]다른가문')
         sheets.lookup_role.side_effect = RuntimeError('offline')
         with self.assertRaisesRegex(ValueError, '조회하지 못'):
             await view.priority.callback(interaction)
