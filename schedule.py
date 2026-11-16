@@ -54,7 +54,7 @@ def require_priority_open(event, now=None):
     starts = datetime.strptime(event['starts'], '%Y-%m-%d %H:%M').replace(tzinfo=KST)
     cutoff = starts - timedelta(hours=1)
     if (now or datetime.now(KST)) >= cutoff:
-        raise ValueError(f'부속 우선 참여는 시작 1시간 전({cutoff:%H:%M})부터 신청할 수 없습니다. 일반 참여 버튼을 이용해 주세요.')
+        raise ValueError(f'부속·샤이 우선 참여는 시작 1시간 전({cutoff:%H:%M})부터 신청할 수 없습니다. 일반 참여 버튼을 이용해 주세요.')
 
 
 def cleanup_cutoff(now):

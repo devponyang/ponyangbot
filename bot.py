@@ -11,7 +11,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-from sheets import Sheets, sync_error_message
+from sheets import FamilyNotListed, Sheets, sync_error_message
 from storage import KST, ROLE_LIMITS, Store
 from schedule import due_event_date, event_start, scheduled_capacity, cleanup_cutoff, mode_name, SIEGE_NAMES, require_priority_open
 from identity import parse_display_name
@@ -112,10 +112,24 @@ class EventView(discord.ui.View):
         guild_name, family = parse_display_name(interaction.user.display_name)
         await interaction.response.defer(ephemeral=True)
         await self.validate_registration(interaction, guild_name, family)
+        try:
+            profile = await asyncio.to_thread(self.bot.sheets.lookup_job_and_role, guild_name, family)
+        except FamilyNotListed:
+            profile = None
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError('직업 시트를 조회하지 못했습니다. 잠시 후 다시 신청해 주세요.') from None
+        try:
+            require_priority_open(event)
+            priority_open = True
+        except ValueError:
+            priority_open = False
         self.require_current_event(interaction.guild_id)
         self.bot.store.participate(self.event_id, interaction.guild_id,
             interaction.user.id, str(interaction.user), family, guild_name=guild_name,
-            display_name=interaction.user.display_name)
+            display_name=interaction.user.display_name, shai_qualified=(profile == ('샤이', '본대')),
+            shai_open=priority_open)
         position = next((i for i, member in enumerate(self.bot.store.members(self.event_id), 1)
                         if member['user_id'] == str(interaction.user.id)), None)
         if position is None:
@@ -157,8 +171,9 @@ class EventView(discord.ui.View):
                         if p['user_id'] == str(interaction.user.id))
         waiting = sum(state == '대기' for state in changes.values())
         note = f'\n\n일반 참여자 {waiting}명이 예비로 전환되었습니다.' if waiting else ''
+        label = f'{role} 부속'
         await interaction.followup.send(
-            f'<@{interaction.user.id}>\n\n{role} 부속 우선 참여 신청이 완료되었습니다.\n\n{position}번째 순서{note}',
+            f'<@{interaction.user.id}>\n\n{label} 우선 참여 신청이 완료되었습니다.\n\n{position}번째 순서{note}',
             ephemeral=True, allowed_mentions=discord.AllowedMentions(
                 everyone=False, roles=False, users=[discord.Object(id=interaction.user.id)], replied_user=False))
 
@@ -245,7 +260,7 @@ def event_content(event):
     )
     if not siege:
         cutoff = starts - timedelta(hours=1)
-        content += f'\n\n※ 부속 우선 참여는 시작 1시간 전({cutoff:%H:%M})부터 불가능합니다. 이후에는 일반 참여 버튼을 이용해 주세요.'
+        content += f'\n\n※ 부속·샤이 우선 참여는 시작 1시간 전({cutoff:%H:%M})부터 불가능합니다. 이후에는 일반 참여 버튼을 이용해 주세요.'
     if event['closed']:
         content += '\n\n**모집 마감**'
     return content

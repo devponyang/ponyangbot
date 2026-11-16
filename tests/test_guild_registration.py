@@ -16,6 +16,7 @@ class GuildRegistrationTests(unittest.IsolatedAsyncioTestCase):
             if unquote(path) == "/values/'포도당 직업시트'!C:C":
                 rows.append(['디움'])
             return {'values': rows}
+        sheets.lookup_job_and_role = Mock(return_value=('위치', '본대'))
         sheets.request = Mock(side_effect=read)
         bot = make_bot(store, sheets, 1)
         self.addAsyncCleanup(bot.close)

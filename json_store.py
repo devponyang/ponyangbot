@@ -10,6 +10,7 @@ from pathlib import Path
 
 KST = timezone(timedelta(hours=9))
 ROLE_LIMITS = {'화염탑': 2, '신기전': 1, '코끼리': 2, '불퇴': 2, '대포': 2}
+PRIORITY_LIMITS = {**ROLE_LIMITS, '샤이': 2}
 ROSTER_SIZE = 100
 
 
@@ -189,7 +190,8 @@ class Store:
         return copy.deepcopy(self._rank([p for p in self.data['participants'] if p['event_id'] == event_id and p['status'] == status]))
 
     def participate(self, event_id, guild_id, user_id, username, nickname, join=True,
-                    guild_name='', display_name='', priority_role=None, actor_id=None):
+                    guild_name='', display_name='', priority_role=None, actor_id=None,
+                    shai_qualified=None, shai_open=True):
         event = self.event(event_id, guild_id)
         if event['closed']:
             raise ValueError('이미 마감된 모집입니다.')
@@ -212,17 +214,17 @@ class Store:
                 raise ValueError('이미 같은 가문명으로 참여한 사람이 있습니다. 관리자에게 확인해 주세요.')
             role = priority_role if priority_role is not None else (own.get('priority_role', '') if enrolled else '')
             if enrolled and own.get('priority_role') and priority_role is None and (own['nickname'] != nickname.strip() or own['guild_name'] != guild_name):
-                raise ValueError('부속 참여자의 닉네임 변경은 부속 우선 참여 버튼으로 역할을 다시 확인해 주세요.')
+                raise ValueError('우선 참여자의 닉네임 변경은 해당 우선 참여 버튼으로 역할을 다시 확인해 주세요.')
             if role:
-                if role not in ROLE_LIMITS:
+                if role not in PRIORITY_LIMITS:
                     raise ValueError('부속 우선 참여 대상 역할이 아닙니다.')
                 count = sum(p.get('priority_role') == role and p['user_id'] != str(user_id) for p in active)
-                if count >= ROLE_LIMITS[role]:
-                    raise ValueError(f'{role} 우선 참여 TO({ROLE_LIMITS[role]}명)가 찼습니다. 일반 참여 버튼으로 신청해 주세요.')
+                if count >= PRIORITY_LIMITS[role]:
+                    raise ValueError(f'{role} 우선 참여 TO({PRIORITY_LIMITS[role]}명)가 찼습니다. 일반 참여 버튼으로 신청해 주세요.')
             if not enrolled and len(active) >= ROSTER_SIZE:
                 raise ValueError('참여·예비 인원이 시트 최대 인원인 100명에 도달했습니다.')
             if role and not (enrolled and own.get('priority_role')) and event['capacity'] and sum(bool(p.get('priority_role')) for p in active) >= event['capacity']:
-                raise ValueError('전체 정원이 부속 우선 참여자로 가득 찼습니다.')
+                raise ValueError('전체 정원이 우선 참여자로 가득 찼습니다.')
             order = max((p['join_order'] for p in rows), default=0) + 1
             priority_order = own.get('priority_order', 0) if enrolled and own.get('priority_role') == role else max((p.get('priority_order', 0) for p in rows), default=0) + 1
             if own is None:
@@ -231,6 +233,25 @@ class Store:
             own.update(username=username, nickname=nickname.strip(), guild_name=guild_name,
                        display_name=display_name, status='참여', priority_role=role,
                        priority_order=priority_order, join_order=own['join_order'] if enrolled else order)
+            was_candidate = enrolled and before.get('shai_candidate', before.get('priority_role') == '샤이')
+            if priority_role in ROLE_LIMITS:
+                own['shai_candidate'] = False
+            elif shai_qualified is not None:
+                own['shai_candidate'] = shai_qualified and (shai_open or was_candidate) and role not in ROLE_LIMITS
+        candidates = sorted((p for p in data['participants'] if p['event_id'] == event_id
+                             and p['status'] != '취소' and p.get('priority_role') not in ROLE_LIMITS
+                             and (p.get('shai_candidate') or p.get('priority_role') == '샤이')),
+                            key=lambda p: p['join_order'])
+        eligible = [p for p in candidates if p.get('shai_candidate', True)]
+        winners = {p['user_id'] for p in eligible[:PRIORITY_LIMITS['샤이']]}
+        for p in candidates:
+            p.setdefault('shai_candidate', True)
+            if p['user_id'] in winners:
+                if p.get('priority_role') != '샤이':
+                    p['priority_order'] = max((r.get('priority_order', 0) for r in rows + [own]), default=0) + 1
+                p['priority_role'] = '샤이'
+            else:
+                p['priority_role'] = ''
         own['updated'] = datetime.now(KST).isoformat(timespec='microseconds')
         ranked = self._rank([p for p in data['participants'] if p['event_id'] == event_id and p['status'] != '취소'])
         for i, p in enumerate(ranked):

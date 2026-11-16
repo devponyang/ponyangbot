@@ -164,3 +164,27 @@ class PriorityButtonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(store.members('e')), 1)
         view.stop()
         await bot.close()
+
+    async def test_shai_main_only_and_two_slots(self):
+        store = Store(':memory:')
+        store.create('e', 1, '2단거점', '2030-01-01 21:00', 40)
+        sheets = Sheets.__new__(Sheets)
+        sheets.require_registered_family = Mock()
+        sheets.role_rows = Mock(return_value=[['길드', '가문명', '참여 직업', '역 할'],
+            ['포도당', '하나', '샤이', '본대'], ['포도당', '둘', '샤이', '본대'],
+            ['포도당', '셋', '샤이', '본대'], ['포도당', '넷', '샤이', '대포'],
+            ['포도당', '다섯', '위치', '본대']])
+        bot = make_bot(store, sheets, 1)
+        self.addAsyncCleanup(bot.close)
+        view = EventView(bot, 'e')
+        self.addCleanup(view.stop)
+        interaction = Mock(guild_id=1)
+        interaction.response.defer = AsyncMock()
+        interaction.followup.send = AsyncMock()
+        for uid, name in enumerate(('하나', '둘', '셋', '넷', '다섯'), 1):
+            interaction.user = Mock(id=uid, display_name=f'[포도당]{name}')
+            await view.join.callback(interaction)
+        self.assertEqual([p['priority_role'] for p in store.members('e')], ['샤이', '샤이', '', '', ''])
+        store.participate('e', 1, 1, '', '', join=False)
+        self.assertEqual([(p['nickname'], p['priority_role']) for p in store.members('e')[:2]],
+                         [('둘', '샤이'), ('셋', '샤이')])

@@ -31,7 +31,11 @@ def sync_error_message(error):
     return f'HTTP {code}: {reasons.get(code, "구글 API 요청 실패 — 자동 재시도")}'
 
 
-def find_role(rows, guild, family):
+class FamilyNotListed(ValueError):
+    pass
+
+
+def find_job_and_role(rows, guild, family):
     """Read repeated guild/family/role blocks using their header labels."""
     if not rows:
         raise ValueError('전체 직업 시트가 비어 있습니다.')
@@ -43,20 +47,25 @@ def find_role(rows, guild, family):
         family_col = next((i for i in range(start, end) if headers[i] == '가문명'), None)
         role_col = next((i for i in range(start, end) if headers[i] == '역할'), None)
         if family_col is not None and role_col is not None:
-            blocks.append((start, family_col, role_col))
+            job_col = next((i for i in range(start, end) if headers[i] in ('참여직업', '직업')), None)
+            blocks.append((start, family_col, role_col, job_col))
     if not blocks:
         raise ValueError('전체 직업 시트의 길드·가문명·역할 헤더를 확인해 주세요.')
     matches = []
     for row in rows[1:]:
-        for g, f, r in blocks:
+        for g, f, r, j in blocks:
             cell = lambda i: str(row[i]).strip() if i < len(row) else ''
             if normalize_guild(cell(g)) == normalize_guild(guild) and cell(f) == family:
-                matches.append(cell(r))
+                matches.append((cell(j) if j is not None else '', cell(r)))
     if not matches:
-        raise ValueError('전체 직업 시트에서 해당 길드·가문명을 찾지 못했습니다.')
+        raise FamilyNotListed('전체 직업 시트에서 해당 길드·가문명을 찾지 못했습니다.')
     if len(matches) != 1:
         raise ValueError('전체 직업 시트에 같은 길드·가문명이 중복되어 있습니다. 관리자에게 확인해 주세요.')
     return matches[0]
+
+
+def find_role(rows, guild, family):
+    return find_job_and_role(rows, guild, family)[1]
 
 
 class Sheets:
@@ -75,6 +84,9 @@ class Sheets:
 
     def lookup_role(self, guild, family):
         return find_role(self.role_rows(), guild, family)
+
+    def lookup_job_and_role(self, guild, family):
+        return find_job_and_role(self.role_rows(), guild, family)
 
     def require_registered_family(self, guild, family):
         title = f'{guild} 직업시트'
