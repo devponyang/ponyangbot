@@ -260,7 +260,8 @@ def event_content(event):
     )
     if not siege:
         cutoff = starts - timedelta(hours=1)
-        content += f'\n\n※ 부속·샤이 우선 참여는 시작 1시간 전({cutoff:%H:%M})부터 불가능합니다. 이후에는 일반 참여 버튼을 이용해 주세요.'
+        content += (f'\n\n※ 본대 샤이는 {cutoff:%H:%M} 전에 `참여`를 누르면 신청 순서대로 최대 2명까지 우선 배정됩니다.'
+                    f'\n{cutoff:%H:%M}부터는 부속 우선 신청과 새 샤이 우선 후보 등록이 마감됩니다. 일반 참여는 계속 가능합니다.')
     if event['closed']:
         content += '\n\n**모집 마감**'
     return content

@@ -188,7 +188,8 @@ JSON의 과거 신청 기록은 남습니다. 봇이 꺼져 있었다면 재시�
 - [discord.py 영구 버튼 예제](https://github.com/Rapptz/discord.py/blob/master/examples/views/persistent.py)
 - [Google Sheets 값 읽기·쓰기](https://developers.google.com/workspace/sheets/api/guides/values)
 
-#   p o n y a n g b o t  
+#   p o n y a n g b o t 
+ 
  
 
 
