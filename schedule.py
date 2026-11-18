@@ -10,7 +10,7 @@ WEEKDAY_CAPACITY = {1: 30, 2: 25, 3: 30, 4: 25, 6: 30}
 DEFAULT_WEEKLY_TIERS = [0, 1, 1, 1, 1, 0, 1]
 
 
-SIEGE_NAMES = {3: '제한 발레노스 촌성', 4: '제한 발렌시아 성', 5: '무제한 메디아 성'}
+SIEGE_NAMES = {3: '제한 세렌디아', 4: '제한 칼페온', 5: '무제한 발렌시아'}
 
 
 def mode_name(mode):

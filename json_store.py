@@ -156,7 +156,7 @@ class Store:
         previous_tier = tiers[weekday]
         tiers[weekday] = tier
         data.setdefault('weekly_tiers', {})[str(guild_id)] = tiers
-        labels = {0: '미진행', 1: '1단', 2: '2단', 3: '제한 발레노스 촌성', 4: '제한 발렌시아 성', 5: '무제한 메디아 성'}
+        labels = {0: '미진행', 1: '1단', 2: '2단', 3: '제한 세렌디아', 4: '제한 칼페온', 5: '무제한 발렌시아'}
         if previous_tier != tier:
             self._queue(data, 'log', f"일정 변경: {'월화수목금토일'[weekday]}요일 {labels[previous_tier]} → {labels[tier]} | 관리자: {actor_id or '미상'}", guild_id)
         self._commit(data)

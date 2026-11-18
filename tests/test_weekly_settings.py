@@ -40,7 +40,7 @@ class WeeklySettingsTests(unittest.TestCase):
 
     def test_tier_two_notice(self):
         content = event_content(dict(name='2단거점', starts='2026-11-06 21:00', capacity=50, closed=0))
-        self.assertIn('칼페온, 올루키타', content)
+        self.assertIn('발렌시아, 에다니아', content)
         self.assertIn('(2단 제한 거점입니다.)', content)
         self.assertIn('총 50인', content)
         self.assertNotIn('발레노스', content)
@@ -83,7 +83,7 @@ class PanelTests(unittest.IsolatedAsyncioTestCase):
         await bot.post_due_event(datetime(2026, 11, 5, 22, 0, tzinfo=KST))
         event = store.latest_event(123)
         self.assertEqual((event['name'], event['capacity']), ('2단거점', 50))
-        self.assertIn('칼페온, 올루키타', channel.send.call_args.kwargs['content'])
+        self.assertIn('발렌시아, 에다니아', channel.send.call_args.kwargs['content'])
         store.set_weekly_tier(123, 4, 1)
         await bot.post_due_event(datetime(2026, 11, 5, 22, tzinfo=KST))
         channel.send.assert_awaited_once()
@@ -98,19 +98,22 @@ class PanelTests(unittest.IsolatedAsyncioTestCase):
         view.select_day._values = ['5']
         await view.select_day.callback(interaction)
         self.assertEqual([o.value for o in view.select_tier.options], ['0', '3', '4', '5'])
-        for mode in (3, 4, 5):
+        for mode, region in ((3, '세렌디아'), (4, '칼페온'), (5, '발렌시아')):
             view.select_tier._values = [str(mode)]
             await view.select_tier.callback(interaction)
             self.assertEqual(store.weekly_tiers(123)[5], mode)
             self.assertEqual(capacity_for(5, mode), 100)
-            content = event_content(dict(name=mode_name(mode), starts='2026-11-07 21:00', capacity=100, closed=0))
+            siege_name = mode_name(mode)
+            content = event_content(dict(name=siege_name, starts='2026-11-07 21:00', capacity=100, closed=0))
+            self.assertIn(siege_name, view.content())
             self.assertIn('토요일 공성전', content)
+            self.assertIn(f'"채널 : {region}"', content)
             self.assertIn('총 100인', content)
             self.assertIn('정제수', content)
             self.assertNotIn('1단 제한', content)
         upcoming = view.next_event_text(datetime(2026, 11, 6, 22, 0, tzinfo=KST))
         self.assertIn('토요일', upcoming)
-        self.assertIn('무제한 메디아 성', upcoming)
+        self.assertIn('무제한 발렌시아', upcoming)
         store.create('existing', 123, '2단거점', '2026-11-06 21:00', 50)
         store.set_weekly_tier(123, 4, 1)
         self.assertIn('2단거점 · 50인', view.next_event_text(datetime(2026, 11, 6, 20, tzinfo=KST)))

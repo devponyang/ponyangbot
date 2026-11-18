@@ -229,7 +229,7 @@ def event_content(event):
     weekday = '월화수목금토일'[starts.weekday()]
     tier_match = re.search(r"([12])\s*단", event["name"])
     tier = int(tier_match.group(1)) if tier_match else 1
-    channels = "칼페온, 올루키타" if tier == 2 else "발레노스, 세렌디아"
+    channels = "발렌시아, 에다니아" if tier == 2 else "발레노스, 세렌디아"
     capacity = f"총 {event['capacity']}인" if event['capacity'] else '제한 없음'
     siege = '공성전' in event['name']
     battle = '공성전' if siege else '거점전'
